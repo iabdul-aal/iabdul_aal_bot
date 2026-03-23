@@ -81,6 +81,7 @@ If you intentionally want disposable storage for a temporary environment, set `R
 - After a public answer, the user can continue the same ticket with `/followup <ticket_number> <message>` until the mentor ends it.
 - After the latest public answer, a public ticket ends automatically after 3 days without a follow-up.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
+- When the bot knows the public message, the user also receives a copied version of that public post in the bot together with the direct message link.
 - `/markpublic` is still available if the public answer was posted manually somewhere else, and manual links are normalized to HTTPS.
 - If a public channel is configured, normal channel posts from that channel are mirrored to bot users who are not already members there.
 - Users can stop or resume mirrored channel updates with `/muteupdates` and `/resumeupdates`.

@@ -97,6 +97,7 @@ python bot.py
 17. Send `/followup <ticket_number> <message>` after a public answer and confirm the follow-up returns to the admin on the same ticket.
 18. End a ticket with `/endticket` and confirm later replies are blocked.
 19. Leave a private ticket waiting on the user for 1 day, and a public answered ticket for 3 days, then confirm both auto-end.
+20. Confirm `/replypublic` and discussion replies send the user both the public-answer notice and a copied version of the actual public post when the bot has that source message.
 
 ## Git workflow
 

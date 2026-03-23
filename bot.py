@@ -2058,7 +2058,7 @@ async def post_public_answer(
     context: ContextTypes.DEFAULT_TYPE,
     submission: dict,
     answer_text: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, int | None, int | None]:
     ticket_id = int(submission.get("id", 0))
     message_text = f"Public answer for ticket #{ticket_id}\n\n{answer_text}"
     discussion = submission.get("discussion", {})
@@ -2072,14 +2072,24 @@ async def post_public_answer(
             text=message_text,
             reply_to_message_id=reply_to_message_id,
         )
-        return "public_discussion", getattr(sent_message, "link", "") or ""
+        return (
+            "public_discussion",
+            getattr(sent_message, "link", "") or "",
+            getattr(sent_message, "chat_id", None),
+            getattr(sent_message, "message_id", None),
+        )
 
     if public_channel_id is not None:
         sent_message = await context.bot.send_message(
             chat_id=public_channel_id,
             text=message_text,
         )
-        return "public_channel", getattr(sent_message, "link", "") or ""
+        return (
+            "public_channel",
+            getattr(sent_message, "link", "") or "",
+            getattr(sent_message, "chat_id", None),
+            getattr(sent_message, "message_id", None),
+        )
 
     raise TelegramError("No public destination configured")
 
@@ -2174,6 +2184,41 @@ async def deliver_submission(
     }
     save_submission(record)
     return True
+
+
+async def notify_user_public_answer(
+    context: ContextTypes.DEFAULT_TYPE,
+    submission: dict,
+    notice_text: str,
+    source_chat_id: int | None = None,
+    source_message_id: int | None = None,
+) -> tuple[bool, str]:
+    user_id = submission.get("user", {}).get("id")
+    ticket_id = int(submission.get("id", 0))
+    if user_id is None:
+        return False, f"I could not notify the user about the public answer for ticket #{ticket_id}."
+
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=notice_text,
+            link_preview_options=NO_PREVIEW,
+        )
+    except TelegramError:
+        logger.exception("Failed to notify the user about the public answer")
+        return False, f"I could not notify the user about the public answer for ticket #{ticket_id}."
+
+    if source_chat_id is not None and source_message_id is not None:
+        try:
+            await context.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+            )
+        except TelegramError:
+            logger.exception("Failed to copy the public answer to the user")
+
+    return True, ""
 
 
 async def remember_private_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3732,7 +3777,11 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     try:
-        response_mode, public_link = await post_public_answer(context, submission, answer_text)
+        response_mode, public_link, public_chat_id, public_message_id = await post_public_answer(
+            context,
+            submission,
+            answer_text,
+        )
     except TelegramError:
         logger.exception("Failed to publish public answer")
         await update.message.reply_text(
@@ -3744,16 +3793,16 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = submission.get("user", {}).get("id")
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link, response_mode)
 
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=notice_text,
-            link_preview_options=NO_PREVIEW,
-        )
-    except TelegramError:
-        logger.exception("Failed to notify the user about the public answer")
+    notified, error_message = await notify_user_public_answer(
+        context,
+        submission,
+        notice_text,
+        public_chat_id,
+        public_message_id,
+    )
+    if not notified:
         await update.message.reply_text(
-            f"I could not notify the user about the public answer for ticket #{ticket_id}."
+            error_message,
         )
         return
 
@@ -3764,6 +3813,8 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
             "mode": response_mode,
             "text": answer_text,
             "link": public_link,
+            "public_chat_id": public_chat_id,
+            "public_message_id": public_message_id,
         },
     )
     await update.message.reply_text(f"Public answer posted for ticket #{ticket_id}.")
@@ -3819,19 +3870,16 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    user_id = submission.get("user", {}).get("id")
     notice_text = build_public_notice(ticket_id, public_link, "public_manual")
 
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=notice_text,
-            link_preview_options=NO_PREVIEW,
-        )
-    except TelegramError:
-        logger.exception("Failed to send public-answer notice")
+    notified, error_message = await notify_user_public_answer(
+        context,
+        submission,
+        notice_text,
+    )
+    if not notified:
         await update.message.reply_text(
-            f"I could not notify the user about the public answer for ticket #{ticket_id}."
+            error_message,
         )
         return
 
@@ -3879,21 +3927,20 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(public_reply_block_message(ticket_id))
         return
 
-    user_id = submission.get("user", {}).get("id")
     public_link = getattr(update.message, "link", "") or ""
     public_link = normalize_https_url(public_link)
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link, "public_discussion")
 
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=notice_text,
-            link_preview_options=NO_PREVIEW,
-        )
-    except TelegramError:
-        logger.exception("Failed to send discussion-group public answer")
+    notified, error_message = await notify_user_public_answer(
+        context,
+        submission,
+        notice_text,
+        update.effective_chat.id,
+        update.message.message_id,
+    )
+    if not notified:
         await update.message.reply_text(
-            f"I could not notify the user about the public answer for ticket #{ticket_id}."
+            error_message,
         )
         return
 
@@ -3904,6 +3951,8 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
             "mode": "public_discussion",
             "text": answer_text,
             "link": public_link,
+            "public_chat_id": update.effective_chat.id,
+            "public_message_id": update.message.message_id,
         },
     )
     await update.message.reply_text(f"Public discussion reply recorded for ticket #{ticket_id}.")
