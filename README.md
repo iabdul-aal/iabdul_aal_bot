@@ -32,6 +32,8 @@ PUBLIC_CHANNEL_URL=https://t.me/your_channel
 DISCUSSION_GROUP_ID=
 ```
 
+Railway does not use your local `.env` automatically at runtime for this deployment. Add these values in the service `Variables` tab, then deploy the staged changes.
+
 `ADMIN_ID` can stay empty at first. After deployment, open the bot in Telegram and send `/claimadmin` from your own account. If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP_ID` empty and run `/setdiscussion` inside that group after deployment.
 
 ### Persistent storage

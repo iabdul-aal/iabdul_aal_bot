@@ -1122,7 +1122,9 @@ async def post_init(application: Application) -> None:
 
 def main() -> None:
     if not TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN is missing. Add it to the .env file.")
+        raise RuntimeError(
+            "TELEGRAM_TOKEN is missing. Set it in Railway Variables for deployment or in the local .env file."
+        )
 
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
