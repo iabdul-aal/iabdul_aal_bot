@@ -1,6 +1,14 @@
-# iabdul_aal_bot
+# telegram-mentorship-bot
 
-Telegram mentorship bot for Islam I. Abdulaal.
+Telegram mentorship bot with private intake, anonymous public answers, ticket tracking, and discussion or channel publishing.
+
+## What it does
+
+- Guided and quick question flows
+- Private replies inside Telegram
+- Anonymous public replies through a linked discussion group or channel
+- Ticket tracking with `/status`
+- Admin tools for private replies, public replies, and manual public marking
 
 ## Local run
 
@@ -17,28 +25,37 @@ pip install -r requirements.txt
 python bot.py
 ```
 
+## Environment variables
+
+```env
+TELEGRAM_TOKEN=your_bot_token
+ADMIN_ID=
+MENTOR_LABEL=your mentor
+PUBLIC_CHANNEL_URL=
+DISCUSSION_GROUP_URL=
+DISCUSSION_GROUP_ID=
+PUBLIC_CHANNEL_ID=
+DATA_DIR=./data
+```
+
+`ADMIN_ID` can stay empty at first. After the bot is running, open it in Telegram and send `/claimadmin` from the admin account.
+
+If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP_ID` empty and run `/setdiscussion` inside that group.
+
+If you use a channel for public answers, leave `PUBLIC_CHANNEL_ID` empty and run `/setchannel` inside that channel.
+
+The bot must be an admin in any discussion group or channel it should post to.
+
+## Public and private behavior
+
+- Private reply keeps the request and answer inside the bot.
+- Public answer keeps the user identity private and publishes only a minimal anonymous version of the request.
+- `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
+- `/markpublic` is still available if the public answer was posted manually somewhere else.
+
 ## Railway deployment
 
 This project is prepared for Railway using the root `Dockerfile` and `railway.toml`.
-
-### Required variables
-
-Set these in Railway:
-
-```env
-TELEGRAM_TOKEN=your_rotated_bot_token
-ADMIN_ID=
-MENTOR_USERNAME=@islamibr29
-PUBLIC_CHANNEL_URL=https://t.me/iabdul_aal
-DISCUSSION_GROUP_URL=https://t.me/+dFtrvA9rLjwxN2U0
-DISCUSSION_GROUP_ID=
-```
-
-Railway does not use your local `.env` automatically at runtime for this deployment. Add these values in the service `Variables` tab, then deploy the staged changes.
-
-`ADMIN_ID` can stay empty at first. After deployment, open the bot in Telegram and send `/claimadmin` from your own account. If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP_ID` empty and run `/setdiscussion` inside that group after deployment.
-
-### Persistent storage
 
 Create a Railway volume and mount it to:
 
@@ -46,43 +63,15 @@ Create a Railway volume and mount it to:
 /app/data
 ```
 
-This keeps ticket history and admin state across restarts. Railway automatically provides the mount path to the service, so you do not need to set `DATA_DIR` manually in Railway when a volume is attached.
+This keeps ticket history and admin state across restarts.
 
-### Deploy from GitHub
+## Verification
 
-1. Push this project to a GitHub repository.
-2. In Railway, create a new project.
-3. Choose `Deploy from GitHub repo`.
-4. Select this repository.
-5. Add the environment variables above.
-6. Add a volume mounted at `/app/data`.
-7. Deploy.
-
-### Deploy from the Railway CLI
-
-1. Install the Railway CLI.
-2. Log in.
-3. Link or create a Railway project from this folder.
-4. Run:
+Run:
 
 ```bash
-railway up
+python -m py_compile bot.py
 ```
-
-5. In the Railway dashboard, add the variables and mount a volume at `/app/data`.
-6. Redeploy or restart the service.
-
-### Recommended production settings
-
-- Rotate the Telegram token before deploying because the current token was exposed.
-- Use a paid Railway plan if you want stronger 24/7 behavior. Free and Trial plans are more limited.
-- If you upgrade to a paid plan, set restart policy to `Always` in Railway.
-
-### Free plan notes
-
-- Railway Free is `$0/month` and includes one service with `0.5 GB` RAM and `0.5 GB` volume storage.
-- On the Free plan, `Always` restart is not available. `On Failure` is limited to 10 restarts.
-- This is still the best free path for this bot because free Render services spin down on idle and free Render web services cannot attach persistent disk storage.
 
 ## License
 

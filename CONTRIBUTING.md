@@ -1,15 +1,15 @@
 # Contributing
 
-Thanks for contributing to `iabdul_aal_bot`.
+Thanks for contributing to `telegram-mentorship-bot`.
 
 ## Project overview
 
-This repository contains a Telegram mentorship bot for Islam I. Abdulaal. The bot supports:
+This repository contains a Telegram mentorship bot with:
 
 - Private mentorship requests
-- Public or private answer preference
+- Anonymous public answer support
 - Ticket tracking
-- Discussion-group support for public answers
+- Discussion-group and channel publishing
 
 ## Before you start
 
@@ -27,8 +27,11 @@ Make sure you have:
 ```env
 TELEGRAM_TOKEN=your_bot_token
 ADMIN_ID=
+MENTOR_LABEL=your mentor
 PUBLIC_CHANNEL_URL=
+DISCUSSION_GROUP_URL=
 DISCUSSION_GROUP_ID=
+PUBLIC_CHANNEL_ID=
 DATA_DIR=./data
 ```
 
@@ -50,17 +53,18 @@ python bot.py
 - Keep `.env` local only.
 - Keep changes focused and easy to review.
 - Preserve ticket history compatibility when editing stored submission data.
-- Test the bot flow after changing command handling, ticket logic, or discussion-group logic.
+- Test the bot flow after changing command handling, ticket logic, or public-routing logic.
 
 ## Suggested test flow
 
 1. Start the bot locally.
 2. Send `/claimadmin` from the admin account.
-3. Send `/setdiscussion` inside the linked discussion group if public discussion answers are used.
-4. Submit a private mentorship ticket.
-5. Submit a public mentorship ticket.
-6. Test `/reply`, `/markpublic`, and `/status`.
-7. If discussion-group support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+3. Run `/setdiscussion` inside the linked discussion group if discussion replies are used.
+4. Run `/setchannel` inside the public channel if channel replies are used.
+5. Submit a private mentorship ticket.
+6. Submit a public mentorship ticket.
+7. Test `/reply`, `/replypublic`, `/markpublic`, and `/status`.
+8. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
 
 ## Git workflow
 
@@ -79,20 +83,8 @@ python -m py_compile bot.py
 - Why it changed
 - Any setup or testing notes
 
-## Deployment notes
-
-The repository is prepared for GitHub-based deployment to Railway.
-
-- `Dockerfile` defines the runtime image
-- `railway.toml` defines deployment settings
-- Persistent bot data should be mounted at `/app/data`
-
 ## Security
 
 - Rotate the bot token immediately if it is exposed.
 - Never paste production secrets into issues or pull requests.
-- Be careful when changing admin-only command handling.
-
-## Questions
-
-If a change affects ticket behavior, public-answer routing, or data storage, describe the expected user flow clearly in the pull request.
+- Be careful when changing admin-only command handling or public-answer routing.
