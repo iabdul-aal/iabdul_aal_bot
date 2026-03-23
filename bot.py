@@ -31,12 +31,14 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
 PUBLIC_CHANNEL_URL = (os.getenv("PUBLIC_CHANNEL_URL") or "").strip()
+DISCUSSION_GROUP_ID_RAW = (os.getenv("DISCUSSION_GROUP_ID") or "").strip()
 DATA_DIR = Path(
     os.getenv("DATA_DIR")
     or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
     or Path(__file__).with_name("data")
 )
 ADMIN_FILE = DATA_DIR / "admin_id.txt"
+DISCUSSION_FILE = DATA_DIR / "discussion_group_id.txt"
 SUBMISSIONS_FILE = DATA_DIR / "submissions.jsonl"
 
 TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONFIRM, QUICK_QUESTION = range(10)
@@ -67,6 +69,8 @@ SETUP_COMMANDS = USER_COMMANDS + [
 
 ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("adminstatus", "Show the current admin ID"),
+    BotCommand("setdiscussion", "Bind the linked discussion group"),
+    BotCommand("discussionstatus", "Show the linked discussion group"),
     BotCommand("stats", "Show mentorship request statistics"),
     BotCommand("reply", "Send a private answer to a ticket"),
     BotCommand("markpublic", "Mark a ticket as answered publicly"),
@@ -79,6 +83,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def parse_numeric_id(value: str) -> int | None:
+    value = value.strip()
+    if value and value.lstrip("-").isdigit():
+        return int(value)
+    return None
+
+
 def build_keyboard(rows: list[list[str]]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
 
@@ -89,18 +100,36 @@ def ensure_data_dir() -> None:
 
 def get_admin_id() -> int | None:
     ensure_data_dir()
-    if ADMIN_ID_RAW.isdigit():
-        return int(ADMIN_ID_RAW)
+    admin_id = parse_numeric_id(ADMIN_ID_RAW)
+    if admin_id is not None:
+        return admin_id
     if ADMIN_FILE.exists():
-        stored_id = ADMIN_FILE.read_text(encoding="utf-8").strip()
-        if stored_id.isdigit():
-            return int(stored_id)
+        stored_id = parse_numeric_id(ADMIN_FILE.read_text(encoding="utf-8"))
+        if stored_id is not None:
+            return stored_id
     return None
 
 
 def save_admin_id(admin_id: int) -> None:
     ensure_data_dir()
     ADMIN_FILE.write_text(str(admin_id), encoding="utf-8")
+
+
+def get_discussion_group_id() -> int | None:
+    ensure_data_dir()
+    discussion_group_id = parse_numeric_id(DISCUSSION_GROUP_ID_RAW)
+    if discussion_group_id is not None:
+        return discussion_group_id
+    if DISCUSSION_FILE.exists():
+        stored_id = parse_numeric_id(DISCUSSION_FILE.read_text(encoding="utf-8"))
+        if stored_id is not None:
+            return stored_id
+    return None
+
+
+def save_discussion_group_id(discussion_group_id: int) -> None:
+    ensure_data_dir()
+    DISCUSSION_FILE.write_text(str(discussion_group_id), encoding="utf-8")
 
 
 async def sync_commands(application: Application) -> None:
@@ -120,6 +149,11 @@ async def sync_commands(application: Application) -> None:
 def is_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
     admin_id = context.application.bot_data.get("admin_id")
     return admin_id is not None and user_id == admin_id
+
+
+def is_discussion_group(context: ContextTypes.DEFAULT_TYPE, chat_id: int | None) -> bool:
+    discussion_group_id = context.application.bot_data.get("discussion_group_id")
+    return discussion_group_id is not None and chat_id == discussion_group_id
 
 
 def read_submissions() -> list[dict]:
@@ -187,6 +221,19 @@ def build_public_notice(ticket_id: int, link: str) -> str:
     )
 
 
+def build_public_answer_message(ticket_id: int, answer_text: str, link: str) -> str:
+    lines = [f"Public answer for ticket #{ticket_id} has been posted."]
+    if link:
+        lines.append(f"Link: {link}")
+    elif PUBLIC_CHANNEL_URL:
+        lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
+    if answer_text:
+        lines.append("")
+        lines.append("Answer:")
+        lines.append(answer_text)
+    return "\n".join(lines)
+
+
 def find_submission(ticket_id: int) -> tuple[list[dict], int | None, dict | None]:
     submissions = read_submissions()
     for index, submission in enumerate(submissions):
@@ -195,8 +242,20 @@ def find_submission(ticket_id: int) -> tuple[list[dict], int | None, dict | None
     return submissions, None, None
 
 
+def find_submission_by_discussion_message(
+    chat_id: int,
+    message_id: int,
+) -> tuple[list[dict], int | None, dict | None]:
+    submissions = read_submissions()
+    for index, submission in enumerate(submissions):
+        discussion = submission.get("discussion", {})
+        if discussion.get("chat_id") == chat_id and discussion.get("message_id") == message_id:
+            return submissions, index, submission
+    return submissions, None, None
+
+
 def parse_ticket_id(value: str) -> int | None:
-    return int(value) if value.isdigit() else None
+    return parse_numeric_id(value)
 
 
 def build_submission_record(user, payload: dict, source: str) -> dict:
@@ -213,6 +272,7 @@ def build_submission_record(user, payload: dict, source: str) -> dict:
             "username": user.username or "",
         },
         "request": payload,
+        "discussion": {"chat_id": None, "message_id": None},
         "responses": [],
     }
 
@@ -242,6 +302,26 @@ def format_submission(record: dict) -> str:
         f"Admin actions:\n"
         f"/reply {ticket_id} your private answer\n"
         f"/markpublic {ticket_id} https://t.me/yourchannel/123"
+    )
+
+
+def format_discussion_ticket(record: dict) -> str:
+    user = record["user"]
+    request = record["request"]
+    username = f"@{user['username']}" if user["username"] else "No username"
+
+    return (
+        f"Public Mentorship Ticket #{record['id']}\n\n"
+        f"Name: {user['full_name']}\n"
+        f"Username: {username}\n"
+        f"Track: {request['track']}\n"
+        f"Level: {request['level']}\n"
+        f"Urgency: {request['urgency']}\n\n"
+        f"Goal:\n{request['goal']}\n\n"
+        f"Challenge:\n{request['challenge']}\n\n"
+        f"Question:\n{request['question']}\n\n"
+        f"Context:\n{request['context']}\n\n"
+        "Reply to this message with the public answer to close the ticket."
     )
 
 
@@ -276,11 +356,19 @@ def build_user_status(record: dict) -> str:
         lines.append(f"Latest update: {format_status(record.get('status', 'open'))}")
         if latest.get("mode") == "public" and latest.get("link"):
             lines.append(f"Public link: {latest['link']}")
+        elif latest.get("mode") == "public_discussion" and latest.get("link"):
+            lines.append(f"Discussion link: {latest['link']}")
         elif latest.get("mode") == "public" and PUBLIC_CHANNEL_URL:
             lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
+        elif latest.get("mode") == "public_discussion":
+            lines.append("Discussion answer has been posted.")
 
     if record.get("status") == "answered_public" and PUBLIC_CHANNEL_URL and not responses:
         lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
+
+    discussion = record.get("discussion", {})
+    if discussion.get("message_id") and record.get("status") == "open":
+        lines.append("Public ticket is queued in the discussion group.")
 
     return "\n".join(lines)
 
@@ -303,6 +391,8 @@ async def deliver_submission(
         return False
 
     record = build_submission_record(update.effective_user, payload, source)
+    discussion_group_id = context.application.bot_data.get("discussion_group_id")
+    discussion_posted = False
 
     try:
         await context.bot.send_message(chat_id=admin_id, text=format_submission(record))
@@ -314,13 +404,32 @@ async def deliver_submission(
         )
         return False
 
+    if payload["answer_mode"] == "Public" and discussion_group_id is not None:
+        try:
+            discussion_message = await context.bot.send_message(
+                chat_id=discussion_group_id,
+                text=format_discussion_ticket(record),
+            )
+            record["discussion"] = {
+                "chat_id": discussion_message.chat_id,
+                "message_id": discussion_message.message_id,
+            }
+            discussion_posted = True
+        except TelegramError:
+            logger.exception("Failed to mirror public ticket to discussion group")
+
     save_submission(record)
     public_note = ""
     if payload["answer_mode"] == "Public":
-        public_note = (
-            f"\nIf the answer is posted publicly, look for ticket #{record['id']}"
-            + (f" in {PUBLIC_CHANNEL_URL}" if PUBLIC_CHANNEL_URL else " in the channel.")
-        )
+        if discussion_posted:
+            public_note = (
+                f"\nYour ticket was also posted to the linked discussion group as ticket #{record['id']}."
+            )
+        else:
+            public_note = (
+                f"\nIf the answer is posted publicly, look for ticket #{record['id']}"
+                + (f" in {PUBLIC_CHANNEL_URL}" if PUBLIC_CHANNEL_URL else " in the public discussion.")
+            )
     else:
         public_note = f"\nIf needed, the mentor can answer you privately on Telegram for ticket #{record['id']}."
     await update.message.reply_text(
@@ -367,6 +476,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
             "/adminstatus shows the current admin.\n"
+            "/setdiscussion binds the linked discussion group.\n"
+            "/discussionstatus shows the linked discussion group.\n"
             "/stats shows mentorship request counts.\n"
             "/reply <ticket> <message> sends a private answer.\n"
             "/markpublic <ticket> [link] marks a public answer.\n"
@@ -404,7 +515,8 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await sync_commands(context.application)
     await update.message.reply_text(
         "Admin saved successfully.\n"
-        "The mentorship bot is ready to receive requests.",
+        "The mentorship bot is ready to receive requests.\n"
+        "If you use a linked discussion group for public answers, run /setdiscussion there once.",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -419,6 +531,42 @@ async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     await update.message.reply_text(f"Current admin ID: {admin_id}")
+
+
+async def set_discussion_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None or update.effective_chat is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    if update.effective_chat.type not in {"group", "supergroup"}:
+        await update.message.reply_text(
+            "Open the linked discussion group and run /setdiscussion there."
+        )
+        return
+
+    discussion_group_id = update.effective_chat.id
+    context.application.bot_data["discussion_group_id"] = discussion_group_id
+    save_discussion_group_id(discussion_group_id)
+    await update.message.reply_text(
+        f"Discussion group saved successfully.\nGroup ID: {discussion_group_id}"
+    )
+
+
+async def discussion_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    discussion_group_id = context.application.bot_data.get("discussion_group_id")
+    if discussion_group_id is None:
+        await update.message.reply_text(
+            "No discussion group is linked yet. Run /setdiscussion inside the linked group."
+        )
+        return
+
+    await update.message.reply_text(f"Current discussion group ID: {discussion_group_id}")
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -841,18 +989,32 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("This command is available only to the admin.")
         return
 
-    if not context.args:
+    ticket_id: int | None = None
+    public_link = ""
+    submissions: list[dict]
+    index: int | None
+    submission: dict | None
+
+    if context.args:
+        ticket_id = parse_ticket_id(context.args[0])
+        if ticket_id is None:
+            await update.message.reply_text("Ticket numbers must be numeric.")
+            return
+        public_link = context.args[1].strip() if len(context.args) > 1 else ""
+        submissions, index, submission = find_submission(ticket_id)
+    elif update.message.reply_to_message and is_discussion_group(
+        context, update.effective_chat.id if update.effective_chat else None
+    ):
+        submissions, index, submission = find_submission_by_discussion_message(
+            update.effective_chat.id,
+            update.message.reply_to_message.message_id,
+        )
+        if submission is not None:
+            ticket_id = int(submission["id"])
+    else:
         await update.message.reply_text("Usage: /markpublic <ticket_number> [public_post_link]")
         return
 
-    ticket_id = parse_ticket_id(context.args[0])
-    if ticket_id is None:
-        await update.message.reply_text("Ticket numbers must be numeric.")
-        return
-
-    public_link = context.args[1].strip() if len(context.args) > 1 else ""
-
-    submissions, index, submission = find_submission(ticket_id)
     if submission is None or index is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
         return
@@ -883,8 +1045,78 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"Ticket #{ticket_id} marked as answered publicly.")
 
 
+async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None or update.effective_chat is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        return
+
+    if not is_discussion_group(context, update.effective_chat.id):
+        return
+
+    if update.message.reply_to_message is None:
+        return
+
+    answer_text = (update.message.text or "").strip()
+    if not answer_text:
+        return
+
+    submissions, index, submission = find_submission_by_discussion_message(
+        update.effective_chat.id,
+        update.message.reply_to_message.message_id,
+    )
+    if submission is None or index is None:
+        return
+
+    ticket_id = int(submission["id"])
+    user_id = submission.get("user", {}).get("id")
+    public_link = getattr(update.message, "link", "") or ""
+    notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=notice_text)
+    except TelegramError:
+        logger.exception("Failed to send discussion-group public answer")
+        await update.message.reply_text(
+            f"I could not notify the user about the public answer for ticket #{ticket_id}."
+        )
+        return
+
+    submission["status"] = "answered_public"
+    submission["updated_at"] = datetime.now(timezone.utc).isoformat()
+    submission.setdefault("responses", []).append(
+        {
+            "mode": "public_discussion",
+            "text": answer_text,
+            "link": public_link,
+            "created_at": submission["updated_at"],
+        }
+    )
+    submissions[index] = submission
+    write_submissions(submissions)
+    await update.message.reply_text(f"Public discussion reply recorded for ticket #{ticket_id}.")
+
+
+async def delete_join_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_chat is None:
+        return
+
+    if update.effective_chat.type not in {"group", "supergroup"}:
+        return
+
+    try:
+        await context.bot.delete_message(
+            chat_id=update.effective_chat.id,
+            message_id=update.message.message_id,
+        )
+    except TelegramError:
+        logger.exception("Failed to delete new-member service message")
+
+
 async def post_init(application: Application) -> None:
     application.bot_data["admin_id"] = get_admin_id()
+    application.bot_data["discussion_group_id"] = get_discussion_group_id()
     await sync_commands(application)
 
 
@@ -896,10 +1128,11 @@ def main() -> None:
 
     conversation = ConversationHandler(
         entry_points=[
-            CommandHandler("ask", start_request),
-            MessageHandler(filters.Regex(r"^Ask for mentorship$"), start_request),
+            CommandHandler("ask", start_request, filters=filters.ChatType.PRIVATE),
+            MessageHandler(filters.ChatType.PRIVATE & filters.Regex(r"^Ask for mentorship$"), start_request),
             MessageHandler(
-                filters.TEXT
+                filters.ChatType.PRIVATE
+                & filters.TEXT
                 & ~filters.COMMAND
                 & ~filters.Regex(r"^Ask for mentorship$")
                 & ~filters.Regex(r"^How it works$"),
@@ -926,9 +1159,23 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("claimadmin", claim_admin))
     app.add_handler(CommandHandler("adminstatus", admin_status))
+    app.add_handler(CommandHandler("setdiscussion", set_discussion_group))
+    app.add_handler(CommandHandler("discussionstatus", discussion_status))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reply", reply_ticket))
     app.add_handler(CommandHandler("markpublic", mark_public))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & filters.StatusUpdate.NEW_CHAT_MEMBERS,
+            delete_join_messages,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & filters.REPLY & filters.TEXT & ~filters.COMMAND,
+            handle_discussion_reply,
+        )
+    )
     app.add_handler(MessageHandler(filters.Regex(r"^How it works$"), show_help_message))
     app.add_handler(conversation)
     app.add_handler(CommandHandler("cancel", cancel_request))
