@@ -1200,6 +1200,8 @@ def answer_mode_policy_short(value: str) -> str:
 
 def normalize_request_kind(value: str) -> str:
     lowered = (value or "").strip().lower()
+    if not lowered:
+        return "mentorship"
     if lowered in {MENTORSHIP_REQUEST_LABEL.lower(), "mentor", "mentorship"}:
         return "mentorship"
     if lowered in {TECHNICAL_SERVICE_LABEL.lower(), "service", "technical service", "technical_support"}:
@@ -1269,7 +1271,7 @@ def build_track_prompt(value: str) -> str:
 
 
 def intake_total_steps(mode: str) -> int:
-    return 4 if mode == "quick" else 6
+    return 3 if mode == "quick" else 4
 
 
 def is_specific_track(value: str) -> bool:
@@ -1441,7 +1443,7 @@ def build_fast_read_section(request: dict, ticket_id: int | str) -> str:
         f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})",
         f"Main ask: {trim_text(request['question'], 180)}",
     ]
-    if request.get("request_kind", "other") != "other":
+    if request.get("request_kind", "mentorship") not in {"mentorship", "other"}:
         lines.append(f"Request type: {format_request_kind(request.get('request_kind', 'mentorship'))}")
     if request.get("goal") != "Not provided":
         lines.append(f"Wanted outcome: {trim_text(request['goal'], 140)}")
@@ -1946,14 +1948,14 @@ def build_user_start_message() -> str:
         [
             "",
             "<b>Start here</b>",
-            f"- <b>{escape_html(QUICK_QUESTION_LABEL)}</b> for the fastest path",
-            f"- <b>{escape_html(GUIDED_REQUEST_LABEL)}</b> if you want to add more context",
+            f"- <b>{escape_html(QUICK_QUESTION_LABEL)}</b> for the fastest mentorship question",
+            f"- <b>{escape_html(GUIDED_REQUEST_LABEL)}</b> if you want to add a little more context",
         ]
     )
     if feature_booking_enabled():
         lines.append(f"- <b>{escape_html(BOOK_MEETING_LABEL)}</b> if a call is the better route")
     if feature_services_enabled():
-        lines.append(f"- <b>{escape_html(SERVICES_LABEL)}</b> for larger or broader work")
+        lines.append(f"- <b>{escape_html(SERVICES_LABEL)}</b> for work beyond mentorship")
     lines.extend(
         [
             "",
@@ -1969,8 +1971,9 @@ def build_user_start_message() -> str:
 def build_user_help_message() -> str:
     lines = [
         "<b>How this works</b>",
+        "- This bot is mainly for mentorship questions",
         f"- <b>{escape_html(QUICK_QUESTION_LABEL)}</b> is the default and fastest option",
-        f"- <b>{escape_html(GUIDED_REQUEST_LABEL)}</b> is there when you want to add context",
+        f"- <b>{escape_html(GUIDED_REQUEST_LABEL)}</b> is there when one extra detail would help",
         "- Start with one clear question",
         "- Use /status <ticket> to check progress",
         "- Use /cancel to stop the current guided flow",
@@ -3133,7 +3136,7 @@ def build_admin_ticket_detail_message(record: dict) -> str:
         lines.extend(["", f"Context:\n{request['context']}"])
 
     detail_lines = [f"Requested reply mode: {format_answer_mode(request['answer_mode'])}", f"Details in admin view: {format_contact_visibility(request['contact_visibility'])}"]
-    if request["request_kind"] != "other":
+    if request["request_kind"] not in {"mentorship", "other"}:
         detail_lines.insert(0, f"Request type: {format_request_kind(request['request_kind'])}")
     if request["track"] not in {"General", "General / custom"}:
         detail_lines.append(f"Topic: {request['track']}")
@@ -3175,7 +3178,7 @@ def format_submission(record: dict) -> str:
         f"Status: {format_status(record.get('status', 'open'))}",
         f"Reply: {format_answer_mode(request.get('answer_mode', 'private'))}",
     ]
-    if request.get("request_kind", "other") != "other":
+    if request.get("request_kind", "mentorship") not in {"mentorship", "other"}:
         lines.insert(2, f"Type: {format_request_kind(request.get('request_kind', 'other'))}")
     if request.get("urgency", "Normal") != "Normal":
         lines.append(f"Urgency: {request['urgency']}")
@@ -3219,7 +3222,7 @@ def build_summary(payload: dict) -> str:
         lines.extend(["", "Blocker", request["challenge"]])
 
     meta_lines = [f"Reply: {format_answer_mode(request['answer_mode'])}", f"Details: {format_contact_visibility(request['contact_visibility'])}"]
-    if request["request_kind"] != "other":
+    if request["request_kind"] not in {"mentorship", "other"}:
         meta_lines.insert(0, f"Type: {format_request_kind(request['request_kind'])}")
     if request["urgency"] != "Normal":
         meta_lines.append(f"Urgency: {request['urgency']}")
@@ -3257,7 +3260,7 @@ def build_user_status(record: dict) -> str:
         f"Reply: {format_answer_mode(request.get('answer_mode', 'private'))}",
     ]
 
-    if request.get("request_kind", "other") != "other":
+    if request.get("request_kind", "mentorship") not in {"mentorship", "other"}:
         lines.insert(3, f"Type: {format_request_kind(request.get('request_kind', 'mentorship'))}")
     lines.extend(["", "Question", request.get("question", "Not provided")])
 
@@ -3736,11 +3739,17 @@ async def deliver_submission(
         )
     user_confirmation_message = await update.message.reply_text(
         append_user_cta(
-            f"Request sent\n"
-            f"Ticket: #{record['id']}\n"
-            f"Type: {format_request_kind(record['request']['request_kind'])}\n"
-            f"Reply: {format_answer_mode(record['request']['answer_mode'])}"
-            f"{public_note}",
+            (
+                f"Request sent\n"
+                f"Ticket: #{record['id']}\n"
+                + (
+                    f"Type: {format_request_kind(record['request']['request_kind'])}\n"
+                    if record["request"].get("request_kind") not in {"mentorship", "other"}
+                    else ""
+                )
+                + f"Reply: {format_answer_mode(record['request']['answer_mode'])}"
+                f"{public_note}"
+            ),
             record["id"],
             record,
         ),
@@ -4749,7 +4758,7 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     reset_request(context)
     context.user_data["intake_mode"] = "guided"
     context.user_data["request"] = {
-        "request_kind": "other",
+        "request_kind": "mentorship",
         "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
@@ -4762,7 +4771,7 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         step_text(
             1,
             intake_total_steps("guided"),
-            "What is the main question?",
+            "What would you like help with?",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -4793,7 +4802,7 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         step_text(
             1,
             intake_total_steps("quick"),
-            "Send your question in one message.\nOne clear question works best.",
+            "Send your mentorship question in one message.\nOne clear question works best.",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -4825,7 +4834,7 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     reset_request(context)
     context.user_data["intake_mode"] = "quick"
     context.user_data["request"] = {
-        "request_kind": "other",
+        "request_kind": "mentorship",
         "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
@@ -4838,11 +4847,11 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         step_text(
             2,
             intake_total_steps("quick"),
-            "What kind of request is this?",
+            "How should the answer be delivered?\nPrivate keeps it inside the bot. Public hides your identity.",
         ),
-        reply_markup=build_keyboard(REQUEST_KIND_MENU),
+        reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
-    return REQUEST_KIND
+    return ANSWER_MODE
 
 
 async def capture_request_kind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -5001,11 +5010,11 @@ async def capture_context(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         step_text(
             3,
             intake_total_steps("guided"),
-            "What kind of request is this?",
+            "How should the answer be delivered?\nPrivate keeps it in the bot. Public hides your identity.",
         ),
-        reply_markup=build_keyboard(REQUEST_KIND_MENU),
+        reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
-    return REQUEST_KIND
+    return ANSWER_MODE
 
 
 async def capture_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -5083,7 +5092,7 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
         return QUICK_QUESTION
 
     context.user_data["request"] = {
-        "request_kind": "other",
+        "request_kind": "mentorship",
         "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
@@ -5096,11 +5105,11 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
         step_text(
             2,
             intake_total_steps("quick"),
-            "What kind of request is this?",
+            "How should the answer be delivered?\nPrivate keeps it inside the bot. Public hides your identity.",
         ),
-        reply_markup=build_keyboard(REQUEST_KIND_MENU),
+        reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
-    return REQUEST_KIND
+    return ANSWER_MODE
 
 
 async def confirm_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
