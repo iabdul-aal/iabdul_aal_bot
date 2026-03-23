@@ -58,6 +58,12 @@ def normalize_https_url(value: str) -> str:
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
 MENTOR_LABEL = (os.getenv("MENTOR_LABEL") or DEFAULT_MENTOR_LABEL).strip()
+MENTOR_IDENTITY_TEXT = (os.getenv("MENTOR_IDENTITY_TEXT") or "").strip()
+MENTOR_IDENTITY_DEFAULT = (os.getenv("MENTOR_IDENTITY_DEFAULT") or "hidden").strip().lower()
+MENTOR_AVAILABILITY_TEXT = (
+    os.getenv("MENTOR_AVAILABILITY_TEXT")
+    or "Replies are handled in planned batches. High urgency means time-sensitive, not instant."
+).strip()
 PUBLIC_CHANNEL_URL = normalize_https_url(os.getenv("PUBLIC_CHANNEL_URL") or "")
 DISCUSSION_GROUP_URL = normalize_https_url(os.getenv("DISCUSSION_GROUP_URL") or "")
 DISCUSSION_GROUP_ID_RAW = (os.getenv("DISCUSSION_GROUP_ID") or "").strip()
@@ -78,10 +84,15 @@ TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONTACT_
 GUIDED_REQUEST_LABEL = "Guided request"
 QUICK_QUESTION_LABEL = "Quick question"
 HOW_IT_WORKS_LABEL = "How it works"
+RESPONSE_TIMES_LABEL = "Response times"
+DASHBOARD_LABEL = "Dashboard"
+TEMPLATES_LABEL = "Templates"
 PRIVATE_REPLY_LABEL = "Private reply"
 PUBLIC_ANSWER_LABEL = "Public answer"
 SHOW_CONTACT_LABEL = "Share contact"
 HIDE_CONTACT_LABEL = "Hide contact"
+SHOW_IDENTITY_LABEL = "Show identity"
+HIDE_IDENTITY_LABEL = "Hide identity"
 SUBMIT_LABEL = "Submit"
 RESTART_LABEL = "Restart"
 CANCEL_LABEL = "Cancel"
@@ -92,7 +103,8 @@ PICK_DISCUSSION_LABEL = "Choose discussion group"
 CHANNEL_PICKER_REQUEST_ID = 7001
 DISCUSSION_PICKER_REQUEST_ID = 7002
 
-MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL]]
+MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL, RESPONSE_TIMES_LABEL]]
+ADMIN_MENU = [[DASHBOARD_LABEL, TEMPLATES_LABEL], [RESPONSE_TIMES_LABEL]]
 TRACK_MENU = [
     ["Research direction", "Technical guidance"],
     ["Project review", "Academic growth"],
@@ -107,6 +119,7 @@ LEVEL_MENU = [
 URGENCY_MENU = [["Low", "Normal", "High"]]
 ANSWER_MODE_MENU = [[PRIVATE_REPLY_LABEL, PUBLIC_ANSWER_LABEL]]
 CONTACT_VISIBILITY_MENU = [[SHOW_CONTACT_LABEL, HIDE_CONTACT_LABEL]]
+IDENTITY_VISIBILITY_CHOICES = {SHOW_IDENTITY_LABEL, HIDE_IDENTITY_LABEL}
 CONFIRM_MENU = [[SUBMIT_LABEL, RESTART_LABEL], [CANCEL_LABEL]]
 SKIP_MENU = [[SKIP_LABEL]]
 
@@ -120,6 +133,7 @@ USER_COMMANDS = [
     BotCommand("start", "Open the mentorship bot"),
     BotCommand("ask", "Start a guided mentorship request"),
     BotCommand("quick", "Send a one-message question"),
+    BotCommand("availability", "See response windows"),
     BotCommand("help", "See how the bot works"),
     BotCommand("cancel", "Cancel the current request"),
     BotCommand("status", "Check one of your ticket statuses"),
@@ -131,12 +145,15 @@ SETUP_COMMANDS = USER_COMMANDS + [
 
 ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("adminstatus", "Show the current admin ID"),
+    BotCommand("dashboard", "Show the mentor dashboard"),
+    BotCommand("templates", "List ready reply templates"),
     BotCommand("setdiscussion", "Bind the linked discussion group"),
     BotCommand("discussionstatus", "Show the linked discussion group"),
     BotCommand("setchannel", "Bind the public answer channel"),
     BotCommand("channelstatus", "Show the public answer channel"),
     BotCommand("stats", "Show mentorship request statistics"),
     BotCommand("reply", "Send a private answer to a ticket"),
+    BotCommand("quickreply", "Send a ready private reply template"),
     BotCommand("replypublic", "Post a public answer through the bot"),
     BotCommand("markpublic", "Mark a ticket as answered publicly"),
 ]
@@ -148,6 +165,69 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 STORAGE_LOCK = Lock()
+
+FAST_REPLY_TEMPLATES = {
+    "queue": {
+        "title": "Queued for next slot",
+        "body": (
+            "Your request is in the queue for the next response window.\n"
+            "I answer in focused batches so replies can stay useful, concise, and accurate."
+        ),
+    },
+    "need_context": {
+        "title": "Need more context",
+        "body": (
+            "I can help, but I need one sharper round of context first.\n"
+            "Please reply with:\n"
+            "1. your current stage\n"
+            "2. the exact outcome you want\n"
+            "3. the main blocker\n"
+            "4. any deadline or time pressure"
+        ),
+    },
+    "narrow_scope": {
+        "title": "Narrow the scope",
+        "body": (
+            "To make this useful quickly, choose one target only for the next step.\n"
+            "Reply with the single question that matters most right now."
+        ),
+    },
+    "send_material": {
+        "title": "Send the key material",
+        "body": (
+            "Please send only the most relevant material for review.\n"
+            "Good examples are one abstract, one figure, one page, one proposal section, or one short problem statement."
+        ),
+    },
+    "career_next": {
+        "title": "Career next step",
+        "body": (
+            "The best next step is usually to reduce this to one near-term move.\n"
+            "Reply with your target role or direction, your current profile, and the single gap you want to close first."
+        ),
+    },
+    "startup_focus": {
+        "title": "Startup focus",
+        "body": (
+            "For startup advice, the fastest useful path is to clarify the user, the pain point, and the next validation step.\n"
+            "Reply with those three points in short form."
+        ),
+    },
+    "out_of_scope": {
+        "title": "Outside scope",
+        "body": (
+            "This exact request is outside the scope I can answer responsibly.\n"
+            "If you want, send a narrower version focused on one decision, one draft, one experiment, or one next step."
+        ),
+    },
+    "public_summary": {
+        "title": "Public summary suggestion",
+        "body": (
+            "This looks like a good candidate for a short public answer because others may benefit too.\n"
+            "If needed, I can still keep the public version anonymous and minimal."
+        ),
+    },
+}
 
 
 def parse_numeric_id(value: str) -> int | None:
@@ -516,6 +596,162 @@ def build_contact_visibility_prompt(user) -> str:
     )
 
 
+def default_identity_visibility() -> str:
+    return "show" if MENTOR_IDENTITY_DEFAULT == "show" else "hide"
+
+
+def render_mentor_signature(mode: str) -> str:
+    if mode != "show":
+        return ""
+    if MENTOR_IDENTITY_TEXT:
+        return MENTOR_IDENTITY_TEXT
+    return f"From {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}"
+
+
+def apply_identity_signature(message_text: str, mode: str) -> str:
+    signature = render_mentor_signature(mode)
+    if not signature:
+        return message_text
+    return f"{message_text}\n\n{signature}"
+
+
+def build_availability_message() -> str:
+    return (
+        "What to expect\n\n"
+        "This mentorship is free and designed to stay accurate, practical, and to the point.\n"
+        "Requests are handled in focused batches so time can be used well across everyone.\n\n"
+        f"Response windows\n{MENTOR_AVAILABILITY_TEXT}\n\n"
+        "Best way to get a strong answer\n"
+        "Send one clear goal, one main blocker, and one direct question."
+    )
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def format_age_short(value: str | None) -> str:
+    created_at = parse_iso_datetime(value)
+    if created_at is None:
+        return "unknown"
+
+    now = datetime.now(timezone.utc)
+    delta = now - created_at
+    if delta.days >= 1:
+        return f"{delta.days}d"
+    hours = delta.seconds // 3600
+    if hours >= 1:
+        return f"{hours}h"
+    minutes = max(delta.seconds // 60, 1)
+    return f"{minutes}m"
+
+
+def classify_queue_state(submission: dict) -> str:
+    request = normalize_payload(submission.get("request", {}))
+    if request.get("answer_mode") == "public":
+        return "awaiting_public" if submission.get("status") == "open" else "done_public"
+
+    responses = submission.get("responses", [])
+    if not responses:
+        return "awaiting_private"
+
+    latest = responses[-1]
+    direction = latest.get("direction")
+    if direction == "user_to_mentor":
+        return "awaiting_private"
+    if direction == "mentor_to_user":
+        return "waiting_user"
+
+    if submission.get("status") == "open":
+        return "awaiting_private"
+    return "waiting_user"
+
+
+def queue_priority_key(submission: dict) -> tuple[int, datetime, int]:
+    request = normalize_payload(submission.get("request", {}))
+    urgency_rank = {"High": 0, "Normal": 1, "Low": 2}.get(request.get("urgency", "Normal"), 1)
+    created_at = parse_iso_datetime(submission.get("created_at")) or datetime.max.replace(tzinfo=timezone.utc)
+    return urgency_rank, created_at, int(submission.get("id", 0))
+
+
+def build_dashboard_message(submissions: list[dict]) -> str:
+    if not submissions:
+        return (
+            "Mentor Dashboard\n\n"
+            "No tickets yet.\n\n"
+            f"Response windows\n{MENTOR_AVAILABILITY_TEXT}"
+        )
+
+    waiting_private: list[dict] = []
+    waiting_public: list[dict] = []
+    waiting_user: list[dict] = []
+    high_priority = 0
+
+    for submission in submissions:
+        state = classify_queue_state(submission)
+        request = normalize_payload(submission.get("request", {}))
+        if state == "awaiting_private":
+            waiting_private.append(submission)
+            if request.get("urgency") == "High":
+                high_priority += 1
+        elif state == "awaiting_public":
+            waiting_public.append(submission)
+            if request.get("urgency") == "High":
+                high_priority += 1
+        elif state == "waiting_user":
+            waiting_user.append(submission)
+
+    waiting_on_you = sorted(waiting_private + waiting_public, key=queue_priority_key)
+    preview_lines = []
+    for submission in waiting_on_you[:6]:
+        request = normalize_payload(submission.get("request", {}))
+        mode_label = "Private" if request.get("answer_mode") == "private" else "Public"
+        preview_lines.append(
+            f"#{submission['id']} | {mode_label} | {request['urgency']} | {trim_text(request['track'], 28)} | {format_age_short(submission.get('created_at'))}"
+        )
+
+    preview_text = "\n".join(preview_lines) if preview_lines else "No tickets currently waiting on you."
+
+    return (
+        "Mentor Dashboard\n\n"
+        f"Total tickets: {len(submissions)}\n"
+        f"Waiting on you: {len(waiting_on_you)}\n"
+        f"Private queue: {len(waiting_private)}\n"
+        f"Public queue: {len(waiting_public)}\n"
+        f"Waiting on user: {len(waiting_user)}\n"
+        f"High priority waiting: {high_priority}\n\n"
+        f"Response windows\n{MENTOR_AVAILABILITY_TEXT}\n\n"
+        f"Next tickets\n{preview_text}\n\n"
+        "Fast actions\n"
+        "/templates\n"
+        "/quickreply <ticket> queue\n"
+        "/quickreply <ticket> need_context\n"
+        "/quickreply <ticket> queue show"
+    )
+
+
+def build_templates_message() -> str:
+    lines = ["Ready reply templates", ""]
+    for key, template in FAST_REPLY_TEMPLATES.items():
+        lines.append(f"{key}: {template['title']}")
+    lines.extend(
+        [
+            "",
+            "Usage",
+            "/quickreply <ticket> <template>",
+            "/quickreply <ticket> <template> show",
+            "/quickreply <ticket> <template> hide",
+            "You can also reply to a private ticket message with /quickreply <template> [show|hide].",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def build_public_notice(ticket_id: int, link: str) -> str:
     link = normalize_https_url(link)
     if link:
@@ -793,6 +1029,70 @@ def get_latest_private_thread_message_id(submission: dict, side: str) -> int | N
     return thread.get(root_key)
 
 
+async def send_private_ticket_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    submission: dict,
+    ticket_id: int,
+    message_text: str,
+    admin_message_id: int | None,
+    direction: str,
+) -> tuple[bool, str]:
+    user_id = submission.get("user", {}).get("id")
+    if user_id is None:
+        return False, "I could not find the Telegram user for this ticket."
+
+    reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=user_id,
+            text=message_text,
+            reply_to_message_id=reply_target_message_id,
+        )
+    except TelegramError:
+        logger.exception("Failed to send private ticket message")
+        return False, f"I could not deliver the private message for ticket #{ticket_id}."
+
+    append_response(
+        ticket_id,
+        "answered_private",
+        {
+            "mode": "private_thread" if direction == "mentor_to_user" else "private",
+            "direction": direction,
+            "text": message_text,
+            "admin_message_id": admin_message_id,
+            "user_message_id": sent_message.message_id,
+        },
+    )
+    return True, ""
+
+
+def resolve_quick_reply_target(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[int | None, dict | None, int]:
+    if update.message is None:
+        return None, None, 0
+
+    if context.args:
+        ticket_id = parse_ticket_id(context.args[0])
+        if ticket_id is not None:
+            _, _, submission = find_submission(ticket_id)
+            return ticket_id, submission, 1
+
+    replied_message = getattr(update.message, "reply_to_message", None)
+    if replied_message is None or update.effective_chat is None:
+        return None, None, 0
+
+    _, _, submission, thread_context = find_submission_by_private_message(
+        update.effective_chat.id,
+        replied_message.message_id,
+    )
+    if submission is None or thread_context is None or thread_context.get("side") != "admin":
+        return None, None, 0
+
+    return int(submission["id"]), submission, 0
+
+
 async def post_public_answer(
     context: ContextTypes.DEFAULT_TYPE,
     submission: dict,
@@ -916,15 +1216,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
-            "Admin mode is active.\n"
-            "Use /stats to review tickets, /reply for private answers, and /replypublic for public answers.",
-            reply_markup=ReplyKeyboardRemove(),
+            build_dashboard_message(read_submissions()),
+            reply_markup=build_keyboard(ADMIN_MENU),
         )
         return
 
     await update.message.reply_text(
         "Welcome to the mentorship bot.\n"
         f"Your request is delivered to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
+        "This is a free service designed to stay practical, concise, and sustainable.\n\n"
         "You can ask about research direction, technical guidance, project review, academic growth, career questions, startup ideas, or your own custom topic.\n\n"
         f"{GUIDED_REQUEST_LABEL} explains each step and helps you shape a stronger request.\n"
         f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n\n"
@@ -943,17 +1243,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
             "/adminstatus shows the current admin.\n"
+            "/dashboard shows the current mentor queue and reply slots.\n"
+            "/templates lists the ready private reply templates.\n"
+            "/quickreply sends a template in one step.\n"
             "/setdiscussion opens a private chat picker for the discussion group.\n"
             "/discussionstatus shows the linked discussion group.\n"
             "/setchannel opens a private chat picker for the public channel.\n"
             "/channelstatus shows the public answer channel.\n"
+            "/availability shows the public response-window message.\n"
             "/stats shows mentorship request counts.\n"
             "Reply to a private ticket message to continue the private conversation through the bot.\n"
             "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
             "/replypublic <ticket> <message> posts a public answer through the bot.\n"
             "/markpublic <ticket> [link] marks a public answer.\n"
             "/start refreshes the admin view.",
-            reply_markup=ReplyKeyboardRemove(),
+            reply_markup=build_keyboard(ADMIN_MENU),
         )
         return
 
@@ -965,6 +1269,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot.\n"
         f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version.\n"
         "For private tickets, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
+        f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
         "Use /status <ticket_number> to check one of your ticket statuses.\n"
         "Use /cancel any time during the guided flow.",
         reply_markup=build_keyboard(MAIN_MENU),
@@ -991,8 +1296,9 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "Admin saved successfully.\n"
         "The mentorship bot is ready to receive requests.\n"
-        "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.",
-        reply_markup=ReplyKeyboardRemove(),
+        "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.\n"
+        "Use /dashboard to keep the queue under control and /templates for fast replies.",
+        reply_markup=build_keyboard(ADMIN_MENU),
     )
 
 
@@ -1253,6 +1559,44 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    await update.message.reply_text(
+        build_dashboard_message(read_submissions()),
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
+
+
+async def templates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    await update.message.reply_text(
+        build_templates_message(),
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
+
+
+async def availability_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    reply_markup = build_keyboard(ADMIN_MENU) if is_admin(
+        context, update.effective_user.id if update.effective_user else None
+    ) else build_keyboard(MAIN_MENU)
+    await update.message.reply_text(build_availability_message(), reply_markup=reply_markup)
+
+
 def reset_request(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["request"] = {}
     context.user_data["intake_mode"] = ""
@@ -1264,8 +1608,8 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
-            "Admin mode is active. This guided mentorship flow is for users.",
-            reply_markup=ReplyKeyboardRemove(),
+            "Admin mode is active. Use Dashboard for the queue or Templates for fast replies.",
+            reply_markup=build_keyboard(ADMIN_MENU),
         )
         return ConversationHandler.END
 
@@ -1296,8 +1640,8 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if is_admin(context, update.effective_user.id):
         await update.message.reply_text(
-            "Admin mode is active.\nUse /stats, /reply, or /replypublic to manage tickets.",
-            reply_markup=ReplyKeyboardRemove(),
+            "Admin mode is active.\nUse Dashboard for the queue and Templates for fast replies.",
+            reply_markup=build_keyboard(ADMIN_MENU),
         )
         return ConversationHandler.END
 
@@ -1328,8 +1672,8 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if is_admin(context, update.effective_user.id):
         await update.message.reply_text(
-            "Admin mode is active.\nUse /stats, /reply, or /replypublic to manage tickets.",
-            reply_markup=ReplyKeyboardRemove(),
+            "Admin mode is active.\nUse Dashboard for the queue and Templates for fast replies.",
+            reply_markup=build_keyboard(ADMIN_MENU),
         )
         return ConversationHandler.END
 
@@ -1693,36 +2037,82 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
         return
 
-    user_id = submission.get("user", {}).get("id")
-    reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
-    try:
-        sent_message = await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"Private answer for ticket #{ticket_id}\n\n"
-                f"{answer_text}"
-            ),
-            reply_to_message_id=reply_target_message_id,
-        )
-    except TelegramError:
-        logger.exception("Failed to send private answer")
+    sent, error_message = await send_private_ticket_message(
+        context,
+        submission,
+        ticket_id,
+        f"Private answer for ticket #{ticket_id}\n\n{answer_text}",
+        update.message.message_id,
+        "mentor_to_user",
+    )
+    if not sent:
+        await update.message.reply_text(error_message)
+        return
+    await update.message.reply_text(f"Private answer sent for ticket #{ticket_id}.")
+
+
+async def quick_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_quick_reply_target(update, context)
+    if ticket_id is None or submission is None:
         await update.message.reply_text(
-            f"I could not deliver the private answer for ticket #{ticket_id}."
+            "Usage: /quickreply <ticket_number> <template> [show|hide]\n"
+            "Or reply to a private ticket message with /quickreply <template> [show|hide]."
         )
         return
 
-    append_response(
+    template_args = context.args[args_offset:]
+    if not template_args:
+        await update.message.reply_text(
+            "Choose a template.\n"
+            "Use /templates to list the available quick replies."
+        )
+        return
+
+    template_key = template_args[0].strip().lower()
+    template = FAST_REPLY_TEMPLATES.get(template_key)
+    if template is None:
+        await update.message.reply_text(
+            f"Unknown template: {template_key}\nUse /templates to list the available quick replies."
+        )
+        return
+
+    identity_mode = default_identity_visibility()
+    if len(template_args) > 1:
+        visibility_arg = template_args[1].strip().lower()
+        if visibility_arg in {"show", "signed", SHOW_IDENTITY_LABEL.lower()}:
+            identity_mode = "show"
+        elif visibility_arg in {"hide", "hidden", HIDE_IDENTITY_LABEL.lower()}:
+            identity_mode = "hide"
+        else:
+            await update.message.reply_text("Identity mode must be show or hide.")
+            return
+
+    reply_text = apply_identity_signature(template["body"], identity_mode)
+    sent, error_message = await send_private_ticket_message(
+        context,
+        submission,
         ticket_id,
-        "answered_private",
-        {
-            "mode": "private",
-            "direction": "mentor_to_user",
-            "text": answer_text,
-            "admin_message_id": update.message.message_id,
-            "user_message_id": sent_message.message_id,
-        },
+        f"Private answer for ticket #{ticket_id}\n\n{reply_text}",
+        update.message.message_id,
+        "mentor_to_user",
     )
-    await update.message.reply_text(f"Private answer sent for ticket #{ticket_id}.")
+    if not sent:
+        await update.message.reply_text(error_message)
+        return
+
+    await update.message.reply_text(
+        f"Quick reply sent for ticket #{ticket_id}.\n"
+        f"Template: {template_key}\n"
+        f"Mentor identity: {'shown' if identity_mode == 'show' else 'hidden'}",
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
 
 
 async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2022,6 +2412,9 @@ def main() -> None:
     guided_request_pattern = rf"^{re.escape(GUIDED_REQUEST_LABEL)}$"
     quick_question_pattern = rf"^{re.escape(QUICK_QUESTION_LABEL)}$"
     how_it_works_pattern = rf"^{re.escape(HOW_IT_WORKS_LABEL)}$"
+    response_times_pattern = rf"^{re.escape(RESPONSE_TIMES_LABEL)}$"
+    dashboard_pattern = rf"^{re.escape(DASHBOARD_LABEL)}$"
+    templates_pattern = rf"^{re.escape(TEMPLATES_LABEL)}$"
 
     conversation = ConversationHandler(
         entry_points=[
@@ -2042,6 +2435,9 @@ def main() -> None:
                 & ~filters.COMMAND
                 & ~filters.Regex(guided_request_pattern)
                 & ~filters.Regex(quick_question_pattern)
+                & ~filters.Regex(response_times_pattern)
+                & ~filters.Regex(dashboard_pattern)
+                & ~filters.Regex(templates_pattern)
                 & ~filters.Regex(how_it_works_pattern),
                 start_quick_request,
             ),
@@ -2064,9 +2460,12 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("availability", availability_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("claimadmin", claim_admin))
     app.add_handler(CommandHandler("adminstatus", admin_status))
+    app.add_handler(CommandHandler("dashboard", dashboard_command))
+    app.add_handler(CommandHandler("templates", templates_command))
     app.add_handler(CommandHandler("setdiscussion", set_discussion_group))
     app.add_handler(CommandHandler("discussionstatus", discussion_status))
     app.add_handler(CommandHandler("setchannel", set_public_channel))
@@ -2079,6 +2478,7 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reply", reply_ticket))
+    app.add_handler(CommandHandler("quickreply", quick_reply_ticket))
     app.add_handler(CommandHandler("replypublic", reply_public_ticket))
     app.add_handler(CommandHandler("markpublic", mark_public))
     app.add_handler(
@@ -2095,6 +2495,15 @@ def main() -> None:
     )
     app.add_handler(
         MessageHandler(filters.Regex(how_it_works_pattern) & ~filters.REPLY, show_help_message)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(response_times_pattern) & ~filters.REPLY, availability_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(dashboard_pattern) & ~filters.REPLY, dashboard_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(templates_pattern) & ~filters.REPLY, templates_command)
     )
     app.add_handler(conversation)
     app.add_handler(

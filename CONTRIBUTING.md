@@ -12,6 +12,7 @@ This repository contains a Telegram mentorship bot with:
 - Anonymous public answer support
 - Ticket tracking
 - Private-thread reply routing through the bot
+- Admin dashboard and ready-reply templates
 - Discussion-group and channel publishing
 
 ## Before you start
@@ -31,6 +32,9 @@ Make sure you have:
 TELEGRAM_TOKEN=your_bot_token
 ADMIN_ID=
 MENTOR_LABEL=your mentor
+MENTOR_IDENTITY_TEXT=
+MENTOR_IDENTITY_DEFAULT=hidden
+MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
 PUBLIC_CHANNEL_URL=
 DISCUSSION_GROUP_URL=
 DISCUSSION_GROUP_ID=
@@ -68,8 +72,9 @@ python bot.py
 4. Run `/setchannel` in the private admin chat and choose the public channel if channel replies are used.
 5. Submit a private mentorship ticket.
 6. Submit a public mentorship ticket.
-7. Test `/reply`, `/replypublic`, `/markpublic`, and `/status`.
-8. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+7. Test `/dashboard`, `/templates`, `/quickreply`, `/reply`, `/replypublic`, `/markpublic`, and `/status`.
+8. Reply to a private ticket from both sides and confirm the thread continues through bot replies.
+9. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
 
 ## Git workflow
 

@@ -11,7 +11,7 @@ Telegram mentorship bot for student-facing guidance with private intake, anonymo
 - Anonymous public replies through a linked discussion group or channel
 - Ticket tracking with `/status`
 - Private tickets can continue through replies inside the bot
-- Admin tools for private replies, public replies, and manual public marking
+- Admin dashboard, fast templates, identity controls, and public/private reply tools
 
 ## Local run
 
@@ -34,6 +34,9 @@ python bot.py
 TELEGRAM_TOKEN=your_bot_token
 ADMIN_ID=
 MENTOR_LABEL=your mentor
+MENTOR_IDENTITY_TEXT=
+MENTOR_IDENTITY_DEFAULT=hidden
+MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
 PUBLIC_CHANNEL_URL=
 DISCUSSION_GROUP_URL=
 DISCUSSION_GROUP_ID=
@@ -61,6 +64,14 @@ The configured admin account must also be an admin there so Telegram can offer t
 - Public answer keeps the user identity private and publishes only a minimal anonymous version of the request.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
 - `/markpublic` is still available if the public answer was posted manually somewhere else, and manual links are normalized to HTTPS.
+
+## Admin workflow
+
+- `/dashboard` shows what is waiting on you, what is waiting on the user, and your current response-window message.
+- `/templates` lists concise ready replies for common situations.
+- `/quickreply` sends a reusable private answer template and can optionally show or hide mentor identity.
+- `MENTOR_IDENTITY_TEXT` lets you define the identity/signature text used when you choose to show it.
+- `MENTOR_AVAILABILITY_TEXT` lets you publish fixed or variable response slots without changing code.
 
 ## Railway deployment
 
