@@ -12,6 +12,7 @@ This repository contains a Telegram mentorship bot with:
 - Anonymous public answer support
 - Ticket tracking
 - Private-thread reply routing through the bot
+- Public-ticket follow-ups by ticket ID until the ticket is ended
 - Admin dashboard and ready-reply templates
 - Request grading and copy-ready admin shortcuts
 - Saved tags for reusable links and text shortcuts
@@ -93,6 +94,9 @@ python bot.py
 14. Post in the configured public channel and confirm bot users who are not channel members receive the mirrored update.
 15. Run `/muteupdates`, post again, and confirm that user no longer receives mirrored channel updates until `/resumeupdates`.
 16. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+17. Send `/followup <ticket_number> <message>` after a public answer and confirm the follow-up returns to the admin on the same ticket.
+18. End a ticket with `/endticket` and confirm later replies are blocked.
+19. Leave a private ticket waiting on the user for 1 day, and a public answered ticket for 3 days, then confirm both auto-end.
 
 ## Git workflow
 

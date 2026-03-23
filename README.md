@@ -11,6 +11,7 @@ Telegram mentorship bot for student-facing guidance with private intake, anonymo
 - Anonymous public replies through a linked discussion group or channel
 - Ticket tracking with `/status`
 - Private tickets can continue through replies inside the bot
+- Public tickets can continue with `/followup <ticket>` after a public answer until they are ended
 - Channel posts can be mirrored to bot users who are not already in the public channel
 - Admin dashboard, request grading, copy-ready templates/tags, identity controls, and public/private reply tools
 
@@ -73,9 +74,12 @@ If you intentionally want disposable storage for a temporary environment, set `R
 - Private reply keeps the request and answer inside the bot.
 - If a user chooses private reply, the admin cannot switch that ticket to public later.
 - For private tickets, both sides can continue the same conversation by replying in the bot thread.
+- After the latest private mentor reply, a private ticket ends automatically after 1 day without a reply.
 - The bot receives the user's Telegram display name, username, and routing ID to deliver replies.
 - Before submission, the user can choose whether those Telegram details stay visible in the mentor view.
 - Public answer keeps the user identity private and publishes only a minimal anonymous version of the request. The admin can still answer privately if that is more useful.
+- After a public answer, the user can continue the same ticket with `/followup <ticket_number> <message>` until the mentor ends it.
+- After the latest public answer, a public ticket ends automatically after 3 days without a follow-up.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
 - `/markpublic` is still available if the public answer was posted manually somewhere else, and manual links are normalized to HTTPS.
 - If a public channel is configured, normal channel posts from that channel are mirrored to bot users who are not already members there.
@@ -91,6 +95,7 @@ If you intentionally want disposable storage for a temporary environment, set `R
 - `/tags` lists reusable placeholders like `{{website}}`.
 - `/savetag` and `/deletetag` let you manage saved shortcuts without redeploying.
 - `/quickreply` sends a reusable private answer template and can optionally show or hide mentor identity.
+- `/endticket` ends a ticket manually and stops future replies on that ticket.
 - `MENTOR_IDENTITY_TEXT` lets you define the identity/signature text used when you choose to show it.
 - `MENTOR_LOGO_URL` lets `/start` use a brand image when Telegram can fetch it.
 - `MENTOR_AVAILABILITY_TEXT` lets you publish fixed or variable response slots without changing code.

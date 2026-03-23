@@ -154,6 +154,7 @@ USER_COMMANDS = [
     BotCommand("start", "Open the mentorship bot"),
     BotCommand("ask", "Start a guided mentorship request"),
     BotCommand("quick", "Send a one-message question"),
+    BotCommand("followup", "Continue a public ticket by ticket ID"),
     BotCommand("availability", "See response windows"),
     BotCommand("help", "See how the bot works"),
     BotCommand("muteupdates", "Stop channel news broadcasts in the bot"),
@@ -183,6 +184,7 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("quickreply", "Send a ready private reply template"),
     BotCommand("replypublic", "Post a public answer through the bot"),
     BotCommand("markpublic", "Mark a ticket as answered publicly"),
+    BotCommand("endticket", "End a ticket and stop further replies"),
 ]
 
 logging.basicConfig(
@@ -193,6 +195,8 @@ logger = logging.getLogger(__name__)
 
 STORAGE_LOCK = Lock()
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+PRIVATE_TICKET_IDLE_TIMEOUT = timedelta(days=1)
+PUBLIC_TICKET_IDLE_TIMEOUT = timedelta(days=3)
 
 FAST_REPLY_TEMPLATES = {
     "queue": {
@@ -800,6 +804,7 @@ def format_status(status: str) -> str:
         "open": "Open",
         "answered_private": "Answered privately",
         "answered_public": "Answered publicly",
+        "ended": "Ended",
     }
     return labels.get(status, status.replace("_", " ").title())
 
@@ -1004,6 +1009,32 @@ def public_reply_block_message(ticket_id: int) -> str:
     )
 
 
+def ended_ticket_message(ticket_id: int) -> str:
+    return (
+        f"Ticket #{ticket_id} has already been ended.\n"
+        "Start a new ticket if you want help with a new or continued question."
+    )
+
+
+def public_followup_command(ticket_id: int) -> str:
+    return f"/followup {ticket_id} your next question"
+
+
+def ticket_is_ended(submission: dict) -> bool:
+    return submission.get("status") == "ended"
+
+
+def latest_public_response(submission: dict) -> dict | None:
+    for response in reversed(submission.get("responses", [])):
+        if response.get("mode") in {"public", "public_manual", "public_discussion", "public_channel"}:
+            return response
+    return None
+
+
+def ticket_has_public_answer(submission: dict) -> bool:
+    return latest_public_response(submission) is not None or submission.get("status") == "answered_public"
+
+
 def private_thread_enabled(submission: dict) -> bool:
     request = normalize_payload(submission.get("request", {}))
     if not allows_public_reply(request.get("answer_mode", "private")):
@@ -1019,6 +1050,16 @@ def private_thread_enabled(submission: dict) -> bool:
             return True
 
     return False
+
+
+def public_followup_enabled(submission: dict) -> bool:
+    request = normalize_payload(submission.get("request", {}))
+    return (
+        allows_public_reply(request.get("answer_mode", "private"))
+        and ticket_has_public_answer(submission)
+        and not private_thread_enabled(submission)
+        and not ticket_is_ended(submission)
+    )
 
 
 def normalize_contact_visibility(value: str) -> str:
@@ -1349,6 +1390,9 @@ def build_availability_message() -> str:
         "This mentorship is free and designed to stay accurate, practical, and to the point.\n"
         "Requests are handled in focused batches so time can be used well across everyone.\n\n"
         f"Response windows\n{availability_text}\n\n"
+        "Ticket timing\n"
+        "After the latest private reply, the ticket ends automatically after 1 day without a reply.\n"
+        "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n\n"
         "Best way to get a strong answer\n"
         "Send one clear goal, one main blocker, and one direct question."
     )
@@ -1379,8 +1423,49 @@ def format_age_short(value: str | None) -> str:
     return f"{minutes}m"
 
 
+def latest_response(submission: dict) -> dict | None:
+    responses = submission.get("responses", [])
+    return responses[-1] if responses else None
+
+
+def stale_ticket_auto_end_note(submission: dict) -> str:
+    if ticket_is_ended(submission):
+        return ""
+
+    latest = latest_response(submission)
+    now = datetime.now(timezone.utc)
+    if latest is None:
+        latest_at = parse_iso_datetime(submission.get("updated_at"))
+        if latest_at is None:
+            return ""
+        if submission.get("status") == "answered_private" and now - latest_at >= PRIVATE_TICKET_IDLE_TIMEOUT:
+            return "This ticket was ended automatically after 1 day without a reply in the private conversation."
+        if submission.get("status") == "answered_public" and now - latest_at >= PUBLIC_TICKET_IDLE_TIMEOUT:
+            return "This public ticket was ended automatically after 3 days without a follow-up."
+        return ""
+
+    latest_at = parse_iso_datetime(latest.get("created_at")) or parse_iso_datetime(submission.get("updated_at"))
+    if latest_at is None:
+        return ""
+
+    if latest.get("direction") == "mentor_to_user":
+        if now - latest_at >= PRIVATE_TICKET_IDLE_TIMEOUT:
+            return "This ticket was ended automatically after 1 day without a reply in the private conversation."
+        return ""
+
+    if latest.get("mode") in {"public", "public_manual", "public_discussion", "public_channel"}:
+        if private_thread_enabled(submission):
+            return ""
+        if now - latest_at >= PUBLIC_TICKET_IDLE_TIMEOUT:
+            return "This public ticket was ended automatically after 3 days without a follow-up."
+
+    return ""
+
+
 def classify_queue_state(submission: dict) -> str:
     request = normalize_payload(submission.get("request", {}))
+    if ticket_is_ended(submission):
+        return "done_closed"
     if submission.get("status") == "answered_public":
         return "done_public"
 
@@ -1423,6 +1508,7 @@ def build_dashboard_message(submissions: list[dict]) -> str:
     waiting_private: list[dict] = []
     waiting_public: list[dict] = []
     waiting_user: list[dict] = []
+    ended = 0
     high_priority = 0
     answer_ready = 0
 
@@ -1444,6 +1530,8 @@ def build_dashboard_message(submissions: list[dict]) -> str:
                 answer_ready += 1
         elif state == "waiting_user":
             waiting_user.append(submission)
+        elif state == "done_closed":
+            ended += 1
 
     waiting_on_you = sorted(waiting_private + waiting_public, key=queue_priority_key)
     preview_lines = []
@@ -1465,6 +1553,7 @@ def build_dashboard_message(submissions: list[dict]) -> str:
         f"Private queue: {len(waiting_private)}\n"
         f"Public queue: {len(waiting_public)}\n"
         f"Waiting on user: {len(waiting_user)}\n"
+        f"Ended tickets: {ended}\n"
         f"High priority waiting: {high_priority}\n\n"
         f"Answer-ready now: {answer_ready}\n\n"
         f"Response windows\n{availability_text}\n\n"
@@ -1510,6 +1599,13 @@ def build_public_notice(ticket_id: int, link: str, mode: str | None = None) -> s
     lines = [f"Your public answer for ticket #{ticket_id} has been posted.", f"Posted in: {posted_at}"]
     if link:
         lines.append(f"Link: {link}")
+    lines.extend(
+        [
+            "",
+            f"To continue this public ticket, send {public_followup_command(ticket_id)}.",
+            "You can keep using the same ticket until the mentor ends it.",
+        ]
+    )
     return append_user_cta("\n".join(lines))
 
 
@@ -1522,6 +1618,13 @@ def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mod
         lines.extend(["", answer_text])
     if link:
         lines.extend(["", f"Link: {link}"])
+    lines.extend(
+        [
+            "",
+            f"To continue this public ticket, send {public_followup_command(ticket_id)}.",
+            "You can keep using the same ticket until the mentor ends it.",
+        ]
+    )
     return append_user_cta("\n".join(lines))
 
 
@@ -1543,6 +1646,8 @@ def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
     if allows_public_reply(request.get("answer_mode", "private")):
         buttons.append(build_copy_button("Copy /replypublic", f"/replypublic {ticket_id} "))
         buttons.append(build_copy_button("Copy /markpublic", f"/markpublic {ticket_id} https://"))
+
+    buttons.append(build_copy_button("Copy /endticket", f"/endticket {ticket_id}"))
 
     return InlineKeyboardMarkup(chunk_items(buttons, 2))
 
@@ -1694,6 +1799,7 @@ def format_submission(record: dict) -> str:
     action_lines = [
         "Admin actions",
         f"/reply {ticket_id} your private answer",
+        f"/endticket {ticket_id}",
     ]
     suggested_template = suggest_quick_reply_template(request)
     if suggested_template:
@@ -1740,7 +1846,8 @@ def format_discussion_ticket(record: dict) -> str:
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n\n"
         f"{public_request}\n\n"
-        "Reply here with the public answer to close the ticket."
+        "Reply here with the public answer.\n"
+        "The ticket stays active until the mentor ends it."
     )
 
 
@@ -1768,8 +1875,9 @@ def build_summary(payload: dict) -> str:
 def build_user_status(record: dict) -> str:
     request = normalize_payload(record.get("request", {}))
     quality = assess_request_quality(request)
+    ticket_id = int(record.get("id", 0))
     lines = [
-        f"Ticket #{record['id']}",
+        f"Ticket #{ticket_id}",
         f"Status: {format_status(record.get('status', 'open'))}",
         f"Submitted: {record.get('display_time', 'Unknown')}",
         f"Topic: {request.get('track', 'General')}",
@@ -1799,10 +1907,16 @@ def build_user_status(record: dict) -> str:
         lines.append(f"Posted in: {build_public_posted_at_text(None, '')}")
 
     discussion = record.get("discussion", {})
-    if discussion.get("message_id") and record.get("status") == "open":
+    if discussion.get("message_id") and record.get("status") == "open" and not ticket_has_public_answer(record):
         lines.append("Your anonymous public ticket is queued in the discussion group.")
-    if private_thread_enabled(record):
+    if ticket_is_ended(record):
+        lines.append("This ticket has been ended by the mentor.")
+    elif public_followup_enabled(record):
+        lines.append(f"Continue this public ticket with {public_followup_command(ticket_id)}.")
+        lines.append("Public tickets end automatically after 3 days without a follow-up.")
+    if private_thread_enabled(record) and not ticket_is_ended(record):
         lines.append("Reply to the private ticket thread in the bot to continue the same conversation.")
+        lines.append("After the latest private reply, the ticket ends automatically after 1 day without a reply.")
 
     return "\n".join(lines)
 
@@ -1830,6 +1944,9 @@ async def send_private_ticket_message(
     admin_message_id: int | None,
     direction: str,
 ) -> tuple[bool, str]:
+    if ticket_is_ended(submission):
+        return False, ended_ticket_message(ticket_id)
+
     user_id = submission.get("user", {}).get("id")
     if user_id is None:
         return False, "I could not find the Telegram user for this ticket."
@@ -1900,6 +2017,41 @@ def resolve_quick_reply_target(
         return None, None, 0
 
     return int(submission["id"]), submission, 0
+
+
+def resolve_admin_ticket_target(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[int | None, dict | None, int]:
+    if update.message is None:
+        return None, None, 0
+
+    if context.args:
+        ticket_id = parse_ticket_id(context.args[0])
+        if ticket_id is not None:
+            _, _, submission = find_submission(ticket_id)
+            return ticket_id, submission, 1
+
+    replied_message = getattr(update.message, "reply_to_message", None)
+    if replied_message is None or update.effective_chat is None:
+        return None, None, 0
+
+    _, _, submission, thread_context = find_submission_by_private_message(
+        update.effective_chat.id,
+        replied_message.message_id,
+    )
+    if submission is not None and thread_context is not None and thread_context.get("side") == "admin":
+        return int(submission["id"]), submission, 0
+
+    if is_discussion_group(context, update.effective_chat.id):
+        _, _, submission = find_submission_by_discussion_message(
+            update.effective_chat.id,
+            replied_message.message_id,
+        )
+        if submission is not None:
+            return int(submission["id"]), submission, 0
+
+    return None, None, 0
 
 
 async def post_public_answer(
@@ -2178,11 +2330,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/availability shows the public response-window message.\n"
             f"{PRIVATE_REPLY_LABEL} tickets are locked private and cannot be answered publicly.\n"
             f"{PUBLIC_ANSWER_LABEL} tickets may still be answered privately when that is more useful.\n"
+            "After the latest private reply, a private ticket ends automatically after 1 day without a reply.\n"
+            "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n"
             "/stats shows mentorship request counts.\n"
             "Reply to a private ticket message to continue the private conversation through the bot.\n"
             "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
             "/replypublic <ticket> <message> posts a public answer through the bot.\n"
             "/markpublic <ticket> [link] marks a public answer.\n"
+            "/endticket <ticket> [note] ends a ticket and stops further replies.\n"
             "/start refreshes the admin view.",
             reply_markup=build_keyboard(ADMIN_MENU),
             link_preview_options=NO_PREVIEW,
@@ -2199,6 +2354,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
             f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
             "If your ticket is being handled privately in the bot, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
+            "If your ticket received a public answer, use /followup <ticket_number> <message> to continue it until the mentor ends that ticket.\n"
+            "After the latest private reply, a private ticket ends automatically after 1 day without a reply.\n"
+            "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n"
             "If you are not in the public channel, important channel posts can also be mirrored here for you.\n"
             "Use /muteupdates to stop those updates or /resumeupdates to turn them back on.\n"
             f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
@@ -3065,6 +3223,241 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(message_text, link_preview_options=NO_PREVIEW)
 
 
+async def followup_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /followup <ticket_number> <message>")
+        return
+
+    ticket_id = parse_ticket_id(context.args[0])
+    if ticket_id is None:
+        await update.message.reply_text("Ticket numbers must be numeric.")
+        return
+
+    followup_text = " ".join(context.args[1:]).strip()
+    if not followup_text:
+        await update.message.reply_text("Please include the follow-up message after the ticket number.")
+        return
+
+    _, _, submission = find_submission(ticket_id)
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    if submission.get("user", {}).get("id") != update.effective_user.id:
+        await update.message.reply_text("You can only continue your own tickets.")
+        return
+
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
+        return
+
+    request = normalize_payload(submission.get("request", {}))
+    if not allows_public_reply(request.get("answer_mode", "private")):
+        await update.message.reply_text(
+            "This ticket already uses private replies in the bot.\n"
+            "Reply to the private ticket thread instead."
+        )
+        return
+
+    if private_thread_enabled(submission):
+        await update.message.reply_text(
+            "This ticket is currently continuing privately in the bot.\n"
+            "Reply to the private ticket thread instead."
+        )
+        return
+
+    if not ticket_has_public_answer(submission):
+        await update.message.reply_text(
+            f"Ticket #{ticket_id} has not received a public answer yet.\n"
+            "Use /status to check it while it is still in queue."
+        )
+        return
+
+    admin_id = context.application.bot_data.get("admin_id")
+    if admin_id is None:
+        await update.message.reply_text("The mentor is not configured yet. Please try again later.")
+        return
+
+    admin_reply_target = get_latest_private_thread_message_id(submission, "admin")
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=admin_id,
+            text=(
+                f"Public follow-up for ticket #{ticket_id}\n\n"
+                f"{followup_text}\n\n"
+                "Reply with /replypublic for another public answer, /reply for a private switch, or /endticket when finished."
+            ),
+            reply_to_message_id=admin_reply_target,
+            reply_markup=build_ticket_actions_markup(submission),
+            link_preview_options=NO_PREVIEW,
+        )
+    except TelegramError:
+        logger.exception("Failed to relay user public follow-up")
+        await update.message.reply_text(
+            "I could not send your follow-up right now. Please try again in a moment."
+        )
+        return
+
+    append_response(
+        ticket_id,
+        "open",
+        {
+            "mode": "public_followup",
+            "direction": "user_to_mentor",
+            "text": followup_text,
+            "admin_message_id": sent_message.message_id,
+            "user_message_id": update.message.message_id,
+        },
+    )
+    await update.message.reply_text(
+        append_user_cta(
+            f"Your follow-up for ticket #{ticket_id} has been sent.\n"
+            "Use /status to track the same ticket."
+        ),
+        reply_markup=build_keyboard(MAIN_MENU),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def end_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None or submission is None:
+        await update.message.reply_text(
+            "Usage: /endticket <ticket_number> [optional closing note]\n"
+            "You can also reply to an admin-side ticket message with /endticket [optional closing note]."
+        )
+        return
+
+    if ticket_is_ended(submission):
+        await update.message.reply_text(f"Ticket #{ticket_id} is already ended.")
+        return
+
+    closing_note = " ".join(context.args[args_offset:]).strip()
+    if closing_note:
+        closing_note, missing_tags = expand_saved_tags(
+            closing_note,
+            {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+        )
+        if missing_tags:
+            await update.message.reply_text(
+                build_unknown_tags_message(missing_tags),
+                reply_markup=build_keyboard(ADMIN_MENU),
+            )
+            return
+
+    user_id = submission.get("user", {}).get("id")
+    user_message_id = None
+    notify_error = ""
+    if user_id is not None:
+        lines = [f"Ticket #{ticket_id} has been ended by the mentor."]
+        if closing_note:
+            lines.extend(["", closing_note])
+        lines.extend(["", "Start a new ticket any time if you want help with a new or continued question."])
+        try:
+            sent_message = await context.bot.send_message(
+                chat_id=user_id,
+                text=append_user_cta("\n".join(lines)),
+                link_preview_options=NO_PREVIEW,
+            )
+            user_message_id = sent_message.message_id
+        except TelegramError:
+            logger.exception("Failed to notify user about ended ticket")
+            notify_error = " The ticket was ended, but I could not notify the user."
+
+    append_response(
+        ticket_id,
+        "ended",
+        {
+            "mode": "ticket_end",
+            "direction": "mentor_to_user",
+            "text": closing_note,
+            "admin_message_id": update.message.message_id,
+            "user_message_id": user_message_id,
+        },
+    )
+    await update.message.reply_text(
+        f"Ticket #{ticket_id} ended.{notify_error}",
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
+
+
+async def auto_end_ticket_by_inactivity(application: Application, ticket_id: int) -> bool:
+    _, _, submission = find_submission(ticket_id)
+    if submission is None:
+        return False
+
+    closing_note = stale_ticket_auto_end_note(submission)
+    if not closing_note:
+        return False
+
+    user_id = submission.get("user", {}).get("id")
+    user_message_id = None
+    admin_message_id = None
+
+    if user_id is not None:
+        try:
+            sent_message = await application.bot.send_message(
+                chat_id=user_id,
+                text=append_user_cta(
+                    f"Ticket #{ticket_id} was ended automatically.\n\n"
+                    f"{closing_note}\n\n"
+                    "Start a new ticket any time if you want help with a new or continued question."
+                ),
+                link_preview_options=NO_PREVIEW,
+            )
+            user_message_id = sent_message.message_id
+        except TelegramError:
+            logger.exception("Failed to notify user about automatic ticket end")
+
+    admin_id = application.bot_data.get("admin_id")
+    admin_root_message_id = submission.get("private_thread", {}).get("admin_root_message_id")
+    if admin_id is not None:
+        try:
+            sent_admin_message = await application.bot.send_message(
+                chat_id=admin_id,
+                text=f"Ticket #{ticket_id} ended automatically.\n{closing_note}",
+                reply_to_message_id=admin_root_message_id,
+                reply_markup=build_keyboard(ADMIN_MENU),
+                link_preview_options=NO_PREVIEW,
+            )
+            admin_message_id = sent_admin_message.message_id
+        except TelegramError:
+            logger.exception("Failed to notify admin about automatic ticket end")
+
+    append_response(
+        ticket_id,
+        "ended",
+        {
+            "mode": "ticket_end_auto",
+            "direction": "system",
+            "text": closing_note,
+            "admin_message_id": admin_message_id,
+            "user_message_id": user_message_id,
+        },
+    )
+    logger.info("Ticket %s ended automatically due to inactivity", ticket_id)
+    return True
+
+
+async def sweep_stale_tickets(application: Application) -> None:
+    for submission in read_submissions():
+        await auto_end_ticket_by_inactivity(application, int(submission.get("id", 0)))
+
+
+async def auto_end_stale_tickets(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await sweep_stale_tickets(context.application)
+
+
 async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
@@ -3090,6 +3483,9 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _, _, submission = find_submission(ticket_id)
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
         return
 
     answer_text, missing_tags = expand_saved_tags(
@@ -3131,6 +3527,9 @@ async def quick_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "Usage: /quickreply <ticket_number> <template> [show|hide]\n"
             "Or reply to a private ticket message with /quickreply <template> [show|hide]."
         )
+        return
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
         return
 
     template_args = context.args[args_offset:]
@@ -3218,6 +3617,9 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
         return
 
     ticket_id = int(submission["id"])
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
+        return
 
     if thread_context["side"] == "admin":
         reply_text, missing_tags = expand_saved_tags(
@@ -3305,6 +3707,9 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, _, submission = find_submission(ticket_id)
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
         return
 
     request = normalize_payload(submission.get("request", {}))
@@ -3402,6 +3807,9 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
         return
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
+        return
 
     request = normalize_payload(submission.get("request", {}))
     if not allows_public_reply(request.get("answer_mode", "private")):
@@ -3463,6 +3871,9 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
         return
 
     ticket_id = int(submission["id"])
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
+        return
     request = normalize_payload(submission.get("request", {}))
     if not allows_public_reply(request.get("answer_mode", "private")):
         await update.message.reply_text(public_reply_block_message(ticket_id))
@@ -3519,6 +3930,14 @@ async def post_init(application: Application) -> None:
     application.bot_data["discussion_group_id"] = get_discussion_group_id()
     application.bot_data["public_channel_id"] = get_public_channel_id()
     await sync_commands(application)
+    await sweep_stale_tickets(application)
+    if application.job_queue is not None:
+        application.job_queue.run_repeating(
+            auto_end_stale_tickets,
+            interval=3600,
+            first=3600,
+            name="auto_end_stale_tickets",
+        )
 
 
 def main() -> None:
@@ -3585,6 +4004,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("availability", availability_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("followup", followup_ticket, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("muteupdates", mute_updates, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("resumeupdates", resume_updates, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("status", status_command))
@@ -3612,6 +4032,7 @@ def main() -> None:
     app.add_handler(CommandHandler("quickreply", quick_reply_ticket))
     app.add_handler(CommandHandler("replypublic", reply_public_ticket))
     app.add_handler(CommandHandler("markpublic", mark_public))
+    app.add_handler(CommandHandler("endticket", end_ticket))
     app.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & filters.StatusUpdate.NEW_CHAT_MEMBERS,
