@@ -78,6 +78,7 @@ DISCUSSION_FILE = DATA_DIR / "discussion_group_id.txt"
 PUBLIC_CHANNEL_FILE = DATA_DIR / "public_channel_id.txt"
 COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
 SUBMISSIONS_FILE = DATA_DIR / "submissions.jsonl"
+TAGS_FILE = DATA_DIR / "saved_tags.json"
 
 TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONTACT_VISIBILITY, CONFIRM, QUICK_QUESTION = range(11)
 
@@ -87,6 +88,7 @@ HOW_IT_WORKS_LABEL = "How it works"
 RESPONSE_TIMES_LABEL = "Response times"
 DASHBOARD_LABEL = "Dashboard"
 TEMPLATES_LABEL = "Templates"
+TAGS_LABEL = "Tags"
 PRIVATE_REPLY_LABEL = "Private reply"
 PUBLIC_ANSWER_LABEL = "Public answer"
 SHOW_CONTACT_LABEL = "Share contact"
@@ -104,7 +106,7 @@ CHANNEL_PICKER_REQUEST_ID = 7001
 DISCUSSION_PICKER_REQUEST_ID = 7002
 
 MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL, RESPONSE_TIMES_LABEL]]
-ADMIN_MENU = [[DASHBOARD_LABEL, TEMPLATES_LABEL], [RESPONSE_TIMES_LABEL]]
+ADMIN_MENU = [[DASHBOARD_LABEL, TEMPLATES_LABEL], [TAGS_LABEL, RESPONSE_TIMES_LABEL]]
 TRACK_MENU = [
     ["Research direction", "Technical guidance"],
     ["Project review", "Academic growth"],
@@ -128,6 +130,8 @@ LEVEL_CHOICES = {item for row in LEVEL_MENU for item in row}
 URGENCY_CHOICES = {item for row in URGENCY_MENU for item in row}
 ANSWER_MODE_CHOICES = {item for row in ANSWER_MODE_MENU for item in row}
 CONTACT_VISIBILITY_CHOICES = {item for row in CONTACT_VISIBILITY_MENU for item in row}
+TAG_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+TAG_PLACEHOLDER_PATTERN = re.compile(r"\{\{([a-zA-Z0-9_-]+)\}\}")
 
 USER_COMMANDS = [
     BotCommand("start", "Open the mentorship bot"),
@@ -147,6 +151,9 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("adminstatus", "Show the current admin ID"),
     BotCommand("dashboard", "Show the mentor dashboard"),
     BotCommand("templates", "List ready reply templates"),
+    BotCommand("tags", "List available saved tags"),
+    BotCommand("savetag", "Save a reusable reply tag"),
+    BotCommand("deletetag", "Delete a saved reply tag"),
     BotCommand("setdiscussion", "Bind the linked discussion group"),
     BotCommand("discussionstatus", "Show the linked discussion group"),
     BotCommand("setchannel", "Bind the public answer channel"),
@@ -268,6 +275,64 @@ def load_numeric_id(raw_value: str, file_path: Path) -> int | None:
 def save_numeric_id(file_path: Path, numeric_id: int) -> None:
     ensure_data_dir()
     file_path.write_text(str(numeric_id), encoding="utf-8")
+
+
+def normalize_tag_name(value: str) -> str | None:
+    name = (value or "").strip().lower().replace(" ", "_")
+    if TAG_NAME_PATTERN.fullmatch(name):
+        return name
+    return None
+
+
+def read_saved_tags() -> dict[str, str]:
+    with STORAGE_LOCK:
+        ensure_data_dir()
+        if not TAGS_FILE.exists():
+            return {}
+
+        try:
+            payload = json.loads(TAGS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to read saved tags")
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+
+        tags: dict[str, str] = {}
+        for raw_name, raw_value in payload.items():
+            name = normalize_tag_name(str(raw_name))
+            value = str(raw_value).strip()
+            if name and value:
+                tags[name] = value
+        return dict(sorted(tags.items()))
+
+
+def save_saved_tags(tags: dict[str, str]) -> None:
+    with STORAGE_LOCK:
+        ensure_data_dir()
+        normalized: dict[str, str] = {}
+        for raw_name, raw_value in tags.items():
+            name = normalize_tag_name(str(raw_name))
+            value = str(raw_value).strip()
+            if name and value:
+                normalized[name] = value
+        TAGS_FILE.write_text(
+            json.dumps(dict(sorted(normalized.items())), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def read_env_tags() -> dict[str, str]:
+    tags: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if not key.startswith("TAG_"):
+            continue
+        name = normalize_tag_name(key[4:])
+        text = (value or "").strip()
+        if name and text:
+            tags[name] = text
+    return dict(sorted(tags.items()))
 
 
 def get_admin_id() -> int | None:
@@ -537,6 +602,10 @@ def trim_text(value: str, limit: int) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def format_tag_preview(value: str) -> str:
+    return trim_text(re.sub(r"\s+", " ", value).strip(), 72)
+
+
 def sanitize_public_text(value: str, limit: int) -> str:
     text = clean_text(value, "")
     if not text:
@@ -615,12 +684,130 @@ def apply_identity_signature(message_text: str, mode: str) -> str:
     return f"{message_text}\n\n{signature}"
 
 
+def build_builtin_tags() -> dict[str, str]:
+    tags = {
+        "mentor": MENTOR_LABEL or DEFAULT_MENTOR_LABEL,
+        "availability": MENTOR_AVAILABILITY_TEXT,
+    }
+    identity = render_mentor_signature("show")
+    if identity:
+        tags["identity"] = identity
+    if PUBLIC_CHANNEL_URL:
+        tags["public_channel"] = PUBLIC_CHANNEL_URL
+        tags["channel"] = PUBLIC_CHANNEL_URL
+    if DISCUSSION_GROUP_URL:
+        tags["discussion_group"] = DISCUSSION_GROUP_URL
+        tags["discussion"] = DISCUSSION_GROUP_URL
+    return tags
+
+
+def build_tag_catalog(extra_tags: dict[str, str] | None = None) -> dict[str, str]:
+    tags = build_builtin_tags()
+    tags.update(read_env_tags())
+    tags.update(read_saved_tags())
+    if extra_tags:
+        for raw_name, raw_value in extra_tags.items():
+            name = normalize_tag_name(raw_name)
+            value = (raw_value or "").strip()
+            if name and value:
+                tags[name] = value
+    return tags
+
+
+def expand_saved_tags(
+    value: str,
+    extra_tags: dict[str, str] | None = None,
+) -> tuple[str, list[str]]:
+    expanded = value
+    catalog = build_tag_catalog(extra_tags)
+
+    for _ in range(5):
+        changed = False
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal changed
+            name = normalize_tag_name(match.group(1)) or match.group(1).strip().lower()
+            replacement = catalog.get(name)
+            if replacement is None:
+                return match.group(0)
+            changed = True
+            return replacement
+
+        next_text = TAG_PLACEHOLDER_PATTERN.sub(replace, expanded)
+        expanded = next_text
+        if not changed:
+            break
+
+    missing = sorted(
+        {
+            normalize_tag_name(match.group(1)) or match.group(1).strip().lower()
+            for match in TAG_PLACEHOLDER_PATTERN.finditer(expanded)
+        }
+    )
+    return expanded, missing
+
+
+def build_unknown_tags_message(missing_tags: list[str]) -> str:
+    placeholders = ", ".join(f"{{{{{name}}}}}" for name in missing_tags)
+    return (
+        f"Unknown tag: {placeholders}" if len(missing_tags) == 1 else f"Unknown tags: {placeholders}"
+    ) + "\nUse /tags to list the available tags or /savetag to add one."
+
+
+def build_tags_message() -> str:
+    builtin_tags = build_builtin_tags()
+    env_tags = read_env_tags()
+    saved_tags = read_saved_tags()
+
+    lines = [
+        "Saved tags",
+        "",
+        "Use {{tag_name}} inside /reply, /replypublic, /quickreply, or an admin private-thread reply.",
+        "Priority: saved tag in bot -> TAG_ value from .env -> built-in tag.",
+    ]
+
+    sections = [
+        ("Built in", builtin_tags),
+        ("From .env", env_tags),
+        ("Saved in bot", saved_tags),
+    ]
+    for title, tags in sections:
+        lines.append("")
+        lines.append(title)
+        if not tags:
+            lines.append("None")
+            continue
+        for name, raw_value in sorted(tags.items()):
+            preview, _ = expand_saved_tags(raw_value)
+            lines.append(f"{{{{{name}}}}} -> {format_tag_preview(preview)}")
+
+    lines.extend(
+        [
+            "",
+            "Dynamic",
+            "{{ticket}} -> current ticket number",
+            "{{ticket_id}} -> current ticket number",
+        ]
+    )
+
+    lines.extend(
+        [
+            "",
+            "Manage",
+            "/savetag website https://your-site.example",
+            "/deletetag website",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def build_availability_message() -> str:
+    availability_text, _ = expand_saved_tags(MENTOR_AVAILABILITY_TEXT)
     return (
         "What to expect\n\n"
         "This mentorship is free and designed to stay accurate, practical, and to the point.\n"
         "Requests are handled in focused batches so time can be used well across everyone.\n\n"
-        f"Response windows\n{MENTOR_AVAILABILITY_TEXT}\n\n"
+        f"Response windows\n{availability_text}\n\n"
         "Best way to get a strong answer\n"
         "Send one clear goal, one main blocker, and one direct question."
     )
@@ -680,11 +867,12 @@ def queue_priority_key(submission: dict) -> tuple[int, datetime, int]:
 
 
 def build_dashboard_message(submissions: list[dict]) -> str:
+    availability_text, _ = expand_saved_tags(MENTOR_AVAILABILITY_TEXT)
     if not submissions:
         return (
             "Mentor Dashboard\n\n"
             "No tickets yet.\n\n"
-            f"Response windows\n{MENTOR_AVAILABILITY_TEXT}"
+            f"Response windows\n{availability_text}"
         )
 
     waiting_private: list[dict] = []
@@ -725,10 +913,11 @@ def build_dashboard_message(submissions: list[dict]) -> str:
         f"Public queue: {len(waiting_public)}\n"
         f"Waiting on user: {len(waiting_user)}\n"
         f"High priority waiting: {high_priority}\n\n"
-        f"Response windows\n{MENTOR_AVAILABILITY_TEXT}\n\n"
+        f"Response windows\n{availability_text}\n\n"
         f"Next tickets\n{preview_text}\n\n"
         "Fast actions\n"
         "/templates\n"
+        "/tags\n"
         "/quickreply <ticket> queue\n"
         "/quickreply <ticket> need_context\n"
         "/quickreply <ticket> queue show"
@@ -747,6 +936,7 @@ def build_templates_message() -> str:
             "/quickreply <ticket> <template> show",
             "/quickreply <ticket> <template> hide",
             "You can also reply to a private ticket message with /quickreply <template> [show|hide].",
+            "Saved tags like {{website}} are expanded before sending.",
         ]
     )
     return "\n".join(lines)
@@ -1245,6 +1435,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/adminstatus shows the current admin.\n"
             "/dashboard shows the current mentor queue and reply slots.\n"
             "/templates lists the ready private reply templates.\n"
+            "/tags lists saved shortcuts like {{website}}.\n"
+            "/savetag stores a reusable reply tag.\n"
+            "/deletetag removes a saved reply tag.\n"
             "/quickreply sends a template in one step.\n"
             "/setdiscussion opens a private chat picker for the discussion group.\n"
             "/discussionstatus shows the linked discussion group.\n"
@@ -1297,7 +1490,7 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Admin saved successfully.\n"
         "The mentorship bot is ready to receive requests.\n"
         "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.\n"
-        "Use /dashboard to keep the queue under control and /templates for fast replies.",
+        "Use /dashboard to keep the queue under control, /templates for fast replies, and /tags for saved shortcuts.",
         reply_markup=build_keyboard(ADMIN_MENU),
     )
 
@@ -1597,6 +1790,97 @@ async def availability_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(build_availability_message(), reply_markup=reply_markup)
 
 
+async def tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    await update.message.reply_text(
+        build_tags_message(),
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
+
+
+async def save_tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /savetag <name> <value>")
+        return
+
+    tag_name = normalize_tag_name(context.args[0])
+    if tag_name is None:
+        await update.message.reply_text("Tag names must use letters, numbers, hyphens, or underscores only.")
+        return
+
+    tag_value = " ".join(context.args[1:]).strip()
+    if not tag_value:
+        await update.message.reply_text("Please include the saved value after the tag name.")
+        return
+
+    saved_tags = read_saved_tags()
+    saved_tags[tag_name] = tag_value
+    save_saved_tags(saved_tags)
+
+    override_note = ""
+    if tag_name in read_env_tags():
+        override_note = "\nThis saved tag now overrides the TAG_ value with the same name from .env."
+    elif tag_name in build_builtin_tags():
+        override_note = "\nThis saved tag now overrides the built-in tag with the same name."
+
+    await update.message.reply_text(
+        f"Saved {{{{{tag_name}}}}}.\nValue: {tag_value}{override_note}",
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
+
+
+async def delete_tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /deletetag <name>")
+        return
+
+    tag_name = normalize_tag_name(context.args[0])
+    if tag_name is None:
+        await update.message.reply_text("Tag names must use letters, numbers, hyphens, or underscores only.")
+        return
+
+    saved_tags = read_saved_tags()
+    if tag_name not in saved_tags:
+        await update.message.reply_text(
+            f"{{{{{tag_name}}}}} is not saved in the bot.\nUse /tags to see what is available."
+        )
+        return
+
+    saved_tags.pop(tag_name, None)
+    save_saved_tags(saved_tags)
+
+    fallback_note = ""
+    if tag_name in read_env_tags():
+        fallback_note = "\nThe TAG_ value from .env with the same name is still available."
+    elif tag_name in build_builtin_tags():
+        fallback_note = "\nThe built-in tag with the same name is still available."
+
+    await update.message.reply_text(
+        f"Deleted {{{{{tag_name}}}}}.{fallback_note}",
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
+
+
 def reset_request(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["request"] = {}
     context.user_data["intake_mode"] = ""
@@ -1608,7 +1892,7 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
-            "Admin mode is active. Use Dashboard for the queue or Templates for fast replies.",
+            "Admin mode is active. Use Dashboard for the queue, Templates for fast replies, or Tags for saved shortcuts.",
             reply_markup=build_keyboard(ADMIN_MENU),
         )
         return ConversationHandler.END
@@ -1640,7 +1924,7 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if is_admin(context, update.effective_user.id):
         await update.message.reply_text(
-            "Admin mode is active.\nUse Dashboard for the queue and Templates for fast replies.",
+            "Admin mode is active.\nUse Dashboard for the queue, Templates for fast replies, and Tags for saved shortcuts.",
             reply_markup=build_keyboard(ADMIN_MENU),
         )
         return ConversationHandler.END
@@ -1672,7 +1956,7 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if is_admin(context, update.effective_user.id):
         await update.message.reply_text(
-            "Admin mode is active.\nUse Dashboard for the queue and Templates for fast replies.",
+            "Admin mode is active.\nUse Dashboard for the queue, Templates for fast replies, and Tags for saved shortcuts.",
             reply_markup=build_keyboard(ADMIN_MENU),
         )
         return ConversationHandler.END
@@ -2037,6 +2321,17 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
         return
 
+    answer_text, missing_tags = expand_saved_tags(
+        answer_text,
+        {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+    )
+    if missing_tags:
+        await update.message.reply_text(
+            build_unknown_tags_message(missing_tags),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
+        return
+
     sent, error_message = await send_private_ticket_message(
         context,
         submission,
@@ -2095,6 +2390,17 @@ async def quick_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
     reply_text = apply_identity_signature(template["body"], identity_mode)
+    reply_text, missing_tags = expand_saved_tags(
+        reply_text,
+        {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+    )
+    if missing_tags:
+        await update.message.reply_text(
+            build_unknown_tags_message(missing_tags),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
+        return
+
     sent, error_message = await send_private_ticket_message(
         context,
         submission,
@@ -2144,6 +2450,17 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
 
     if thread_context["side"] == "admin":
         user_id = submission.get("user", {}).get("id")
+        reply_text, missing_tags = expand_saved_tags(
+            reply_text,
+            {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+        )
+        if missing_tags:
+            await update.message.reply_text(
+                build_unknown_tags_message(missing_tags),
+                reply_markup=build_keyboard(ADMIN_MENU),
+            )
+            return
+
         try:
             sent_message = await context.bot.send_message(
                 chat_id=user_id,
@@ -2229,6 +2546,17 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, _, submission = find_submission(ticket_id)
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    answer_text, missing_tags = expand_saved_tags(
+        answer_text,
+        {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+    )
+    if missing_tags:
+        await update.message.reply_text(
+            build_unknown_tags_message(missing_tags),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
         return
 
     try:
@@ -2415,6 +2743,7 @@ def main() -> None:
     response_times_pattern = rf"^{re.escape(RESPONSE_TIMES_LABEL)}$"
     dashboard_pattern = rf"^{re.escape(DASHBOARD_LABEL)}$"
     templates_pattern = rf"^{re.escape(TEMPLATES_LABEL)}$"
+    tags_pattern = rf"^{re.escape(TAGS_LABEL)}$"
 
     conversation = ConversationHandler(
         entry_points=[
@@ -2438,6 +2767,7 @@ def main() -> None:
                 & ~filters.Regex(response_times_pattern)
                 & ~filters.Regex(dashboard_pattern)
                 & ~filters.Regex(templates_pattern)
+                & ~filters.Regex(tags_pattern)
                 & ~filters.Regex(how_it_works_pattern),
                 start_quick_request,
             ),
@@ -2466,6 +2796,9 @@ def main() -> None:
     app.add_handler(CommandHandler("adminstatus", admin_status))
     app.add_handler(CommandHandler("dashboard", dashboard_command))
     app.add_handler(CommandHandler("templates", templates_command))
+    app.add_handler(CommandHandler("tags", tags_command))
+    app.add_handler(CommandHandler("savetag", save_tag_command))
+    app.add_handler(CommandHandler("deletetag", delete_tag_command))
     app.add_handler(CommandHandler("setdiscussion", set_discussion_group))
     app.add_handler(CommandHandler("discussionstatus", discussion_status))
     app.add_handler(CommandHandler("setchannel", set_public_channel))
@@ -2504,6 +2837,9 @@ def main() -> None:
     )
     app.add_handler(
         MessageHandler(filters.Regex(templates_pattern) & ~filters.REPLY, templates_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(tags_pattern) & ~filters.REPLY, tags_command)
     )
     app.add_handler(conversation)
     app.add_handler(

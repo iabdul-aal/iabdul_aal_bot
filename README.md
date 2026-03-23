@@ -11,7 +11,7 @@ Telegram mentorship bot for student-facing guidance with private intake, anonymo
 - Anonymous public replies through a linked discussion group or channel
 - Ticket tracking with `/status`
 - Private tickets can continue through replies inside the bot
-- Admin dashboard, fast templates, identity controls, and public/private reply tools
+- Admin dashboard, fast templates, saved tags, identity controls, and public/private reply tools
 
 ## Local run
 
@@ -37,6 +37,8 @@ MENTOR_LABEL=your mentor
 MENTOR_IDENTITY_TEXT=
 MENTOR_IDENTITY_DEFAULT=hidden
 MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
+TAG_WEBSITE=
+TAG_BOOKING=
 PUBLIC_CHANNEL_URL=
 DISCUSSION_GROUP_URL=
 DISCUSSION_GROUP_ID=
@@ -69,9 +71,13 @@ The configured admin account must also be an admin there so Telegram can offer t
 
 - `/dashboard` shows what is waiting on you, what is waiting on the user, and your current response-window message.
 - `/templates` lists concise ready replies for common situations.
+- `/tags` lists reusable placeholders like `{{website}}`.
+- `/savetag` and `/deletetag` let you manage saved shortcuts without redeploying.
 - `/quickreply` sends a reusable private answer template and can optionally show or hide mentor identity.
 - `MENTOR_IDENTITY_TEXT` lets you define the identity/signature text used when you choose to show it.
 - `MENTOR_AVAILABILITY_TEXT` lets you publish fixed or variable response slots without changing code.
+- Any `TAG_<NAME>` variable in `.env` becomes `{{name}}` in admin replies. Example: `TAG_WEBSITE=https://your-site.example`.
+- Saved tags expand in `/reply`, `/replypublic`, `/quickreply`, and admin private-thread replies.
 
 ## Railway deployment
 
