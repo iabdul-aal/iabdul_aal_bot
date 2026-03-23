@@ -558,6 +558,63 @@ def find_submission_by_discussion_message(
     return submissions, None, None
 
 
+def resolve_private_thread_context(submission: dict, chat_id: int, message_id: int) -> dict | None:
+    request = normalize_payload(submission.get("request", {}))
+    if request.get("answer_mode") != "private":
+        return None
+
+    thread = submission.get("private_thread", {})
+    responses = submission.get("responses", [])
+    admin_chat_id = thread.get("admin_chat_id")
+    user_chat_id = thread.get("user_chat_id") or submission.get("user", {}).get("id")
+    admin_root_message_id = thread.get("admin_root_message_id")
+    user_root_message_id = thread.get("user_root_message_id")
+
+    if chat_id == admin_chat_id:
+        if message_id == admin_root_message_id:
+            return {
+                "side": "admin",
+                "remote_chat_id": user_chat_id,
+                "remote_reply_to_message_id": user_root_message_id,
+            }
+        for response in responses:
+            if response.get("admin_message_id") == message_id:
+                return {
+                    "side": "admin",
+                    "remote_chat_id": user_chat_id,
+                    "remote_reply_to_message_id": response.get("user_message_id") or user_root_message_id,
+                }
+
+    if chat_id == user_chat_id:
+        if message_id == user_root_message_id:
+            return {
+                "side": "user",
+                "remote_chat_id": admin_chat_id,
+                "remote_reply_to_message_id": admin_root_message_id,
+            }
+        for response in responses:
+            if response.get("user_message_id") == message_id:
+                return {
+                    "side": "user",
+                    "remote_chat_id": admin_chat_id,
+                    "remote_reply_to_message_id": response.get("admin_message_id") or admin_root_message_id,
+                }
+
+    return None
+
+
+def find_submission_by_private_message(
+    chat_id: int,
+    message_id: int,
+) -> tuple[list[dict], int | None, dict | None, dict | None]:
+    submissions = read_submissions()
+    for index, submission in enumerate(submissions):
+        thread_context = resolve_private_thread_context(submission, chat_id, message_id)
+        if thread_context is not None:
+            return submissions, index, submission, thread_context
+    return submissions, None, None, None
+
+
 def parse_ticket_id(value: str) -> int | None:
     return parse_numeric_id(value)
 
@@ -593,6 +650,12 @@ def build_submission_record(user, payload: dict, source: str) -> dict:
         },
         "request": normalized_payload,
         "public_request": build_public_prompt(normalized_payload),
+        "private_thread": {
+            "admin_chat_id": None,
+            "admin_root_message_id": None,
+            "user_chat_id": user.id,
+            "user_root_message_id": None,
+        },
         "discussion": {"chat_id": None, "message_id": None},
         "responses": [],
     }
@@ -636,6 +699,8 @@ def format_submission(record: dict) -> str:
         f"Question:\n{request['question']}\n\n"
         f"Context:\n{request['context']}\n\n"
         f"Public preview\n{record.get('public_request', build_public_prompt(request))}\n\n"
+        "Private bot thread\n"
+        "Reply to this message to answer privately or continue the private conversation through the bot.\n\n"
         f"Admin actions\n"
         f"/reply {ticket_id} your private answer\n"
         f"/replypublic {ticket_id} your public answer\n"
@@ -707,8 +772,25 @@ def build_user_status(record: dict) -> str:
     discussion = record.get("discussion", {})
     if discussion.get("message_id") and record.get("status") == "open":
         lines.append("Your anonymous public ticket is queued in the discussion group.")
+    if request.get("answer_mode") == "private":
+        lines.append("Reply to the private ticket thread in the bot to continue the same conversation.")
 
     return "\n".join(lines)
+
+
+def get_latest_private_thread_message_id(submission: dict, side: str) -> int | None:
+    thread = submission.get("private_thread", {})
+    responses = submission.get("responses", [])
+
+    key = "user_message_id" if side == "user" else "admin_message_id"
+    root_key = "user_root_message_id" if side == "user" else "admin_root_message_id"
+
+    for response in reversed(responses):
+        message_id = response.get(key)
+        if message_id is not None:
+            return message_id
+
+    return thread.get(root_key)
 
 
 async def post_public_answer(
@@ -763,7 +845,7 @@ async def deliver_submission(
     discussion_posted = False
 
     try:
-        await context.bot.send_message(chat_id=admin_id, text=format_submission(record))
+        admin_ticket_message = await context.bot.send_message(chat_id=admin_id, text=format_submission(record))
     except TelegramError:
         logger.exception("Failed to forward mentorship request")
         await update.message.reply_text(
@@ -786,7 +868,6 @@ async def deliver_submission(
         except TelegramError:
             logger.exception("Failed to mirror public ticket to discussion group")
 
-    save_submission(record)
     public_note = ""
     if record["request"]["answer_mode"] == "public":
         if discussion_posted:
@@ -799,8 +880,11 @@ async def deliver_submission(
                 f"{build_public_destination_text()}."
             )
     else:
-        public_note = "\nYour request stays private and the answer will be delivered here."
-    await update.message.reply_text(
+        public_note = (
+            "\nYour request stays private and the answer will be delivered here.\n"
+            "Reply to this message or any later private reply from the bot to continue the same ticket."
+        )
+    user_confirmation_message = await update.message.reply_text(
         f"Your mentorship request has been sent.\n"
         f"Ticket: #{record['id']}\n"
         f"Reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
@@ -808,6 +892,13 @@ async def deliver_submission(
         f"{public_note}",
         reply_markup=build_keyboard(MAIN_MENU),
     )
+    record["private_thread"] = {
+        "admin_chat_id": admin_id,
+        "admin_root_message_id": admin_ticket_message.message_id,
+        "user_chat_id": update.effective_user.id,
+        "user_root_message_id": user_confirmation_message.message_id,
+    }
+    save_submission(record)
     return True
 
 
@@ -857,7 +948,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/setchannel opens a private chat picker for the public channel.\n"
             "/channelstatus shows the public answer channel.\n"
             "/stats shows mentorship request counts.\n"
-            "/reply <ticket> <message> sends a private answer.\n"
+            "Reply to a private ticket message to continue the private conversation through the bot.\n"
+            "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
             "/replypublic <ticket> <message> posts a public answer through the bot.\n"
             "/markpublic <ticket> [link] marks a public answer.\n"
             "/start refreshes the admin view.",
@@ -872,6 +964,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
         f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot.\n"
         f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version.\n"
+        "For private tickets, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
         "Use /status <ticket_number> to check one of your ticket statuses.\n"
         "Use /cancel any time during the guided flow.",
         reply_markup=build_keyboard(MAIN_MENU),
@@ -1601,13 +1694,15 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     user_id = submission.get("user", {}).get("id")
+    reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
     try:
-        await context.bot.send_message(
+        sent_message = await context.bot.send_message(
             chat_id=user_id,
             text=(
                 f"Private answer for ticket #{ticket_id}\n\n"
                 f"{answer_text}"
             ),
+            reply_to_message_id=reply_target_message_id,
         )
     except TelegramError:
         logger.exception("Failed to send private answer")
@@ -1621,10 +1716,102 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "answered_private",
         {
             "mode": "private",
+            "direction": "mentor_to_user",
             "text": answer_text,
+            "admin_message_id": update.message.message_id,
+            "user_message_id": sent_message.message_id,
         },
     )
     await update.message.reply_text(f"Private answer sent for ticket #{ticket_id}.")
+
+
+async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None or update.effective_chat is None:
+        return
+
+    if update.effective_chat.type != "private":
+        return
+
+    if update.message.reply_to_message is None:
+        return
+
+    reply_text = (update.message.text or "").strip()
+    if not reply_text:
+        return
+
+    _, _, submission, thread_context = find_submission_by_private_message(
+        update.effective_chat.id,
+        update.message.reply_to_message.message_id,
+    )
+    if submission is None or thread_context is None:
+        if is_admin(context, update.effective_user.id):
+            await update.message.reply_text(
+                "Reply to a ticket message or a private-thread relay to continue a private ticket."
+            )
+        return
+
+    ticket_id = int(submission["id"])
+
+    if thread_context["side"] == "admin":
+        user_id = submission.get("user", {}).get("id")
+        try:
+            sent_message = await context.bot.send_message(
+                chat_id=user_id,
+                text=f"Private reply for ticket #{ticket_id}\n\n{reply_text}",
+                reply_to_message_id=thread_context.get("remote_reply_to_message_id"),
+            )
+        except TelegramError:
+            logger.exception("Failed to relay admin private-thread reply")
+            await update.message.reply_text(
+                f"I could not deliver the private reply for ticket #{ticket_id}."
+            )
+            return
+
+        append_response(
+            ticket_id,
+            "answered_private",
+            {
+                "mode": "private_thread",
+                "direction": "mentor_to_user",
+                "text": reply_text,
+                "admin_message_id": update.message.message_id,
+                "user_message_id": sent_message.message_id,
+            },
+        )
+        return
+
+    admin_id = context.application.bot_data.get("admin_id")
+    if admin_id is None or submission.get("user", {}).get("id") != update.effective_user.id:
+        return
+
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=admin_id,
+            text=(
+                f"Private follow-up for ticket #{ticket_id}\n\n"
+                f"{reply_text}\n\n"
+                "Reply to this message to answer through the bot."
+            ),
+            reply_to_message_id=thread_context.get("remote_reply_to_message_id"),
+        )
+    except TelegramError:
+        logger.exception("Failed to relay user private-thread reply")
+        await update.message.reply_text(
+            "I could not send your private follow-up right now. Please try again in a moment."
+        )
+        return
+
+    append_response(
+        ticket_id,
+        "open",
+        {
+            "mode": "private_thread",
+            "direction": "user_to_mentor",
+            "text": reply_text,
+            "admin_message_id": sent_message.message_id,
+            "user_message_id": update.message.message_id,
+        },
+    )
 
 
 async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1839,12 +2026,19 @@ def main() -> None:
     conversation = ConversationHandler(
         entry_points=[
             CommandHandler("ask", start_request, filters=filters.ChatType.PRIVATE),
-            MessageHandler(filters.ChatType.PRIVATE & filters.Regex(guided_request_pattern), start_request),
+            MessageHandler(
+                filters.ChatType.PRIVATE & filters.Regex(guided_request_pattern) & ~filters.REPLY,
+                start_request,
+            ),
             CommandHandler("quick", begin_quick_request, filters=filters.ChatType.PRIVATE),
-            MessageHandler(filters.ChatType.PRIVATE & filters.Regex(quick_question_pattern), begin_quick_request),
+            MessageHandler(
+                filters.ChatType.PRIVATE & filters.Regex(quick_question_pattern) & ~filters.REPLY,
+                begin_quick_request,
+            ),
             MessageHandler(
                 filters.ChatType.PRIVATE
                 & filters.TEXT
+                & ~filters.REPLY
                 & ~filters.COMMAND
                 & ~filters.Regex(guided_request_pattern)
                 & ~filters.Regex(quick_question_pattern)
@@ -1899,8 +2093,16 @@ def main() -> None:
             handle_discussion_reply,
         )
     )
-    app.add_handler(MessageHandler(filters.Regex(how_it_works_pattern), show_help_message))
+    app.add_handler(
+        MessageHandler(filters.Regex(how_it_works_pattern) & ~filters.REPLY, show_help_message)
+    )
     app.add_handler(conversation)
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.REPLY & filters.TEXT & ~filters.COMMAND,
+            handle_private_thread_reply,
+        )
+    )
     app.add_handler(CommandHandler("cancel", cancel_request))
 
     logger.info("Mentorship bot is starting")

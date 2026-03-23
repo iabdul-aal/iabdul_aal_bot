@@ -10,6 +10,7 @@ Telegram mentorship bot for student-facing guidance with private intake, anonymo
 - Optional hiding of Telegram contact details in the mentor view
 - Anonymous public replies through a linked discussion group or channel
 - Ticket tracking with `/status`
+- Private tickets can continue through replies inside the bot
 - Admin tools for private replies, public replies, and manual public marking
 
 ## Local run
@@ -54,6 +55,7 @@ The configured admin account must also be an admin there so Telegram can offer t
 ## Public and private behavior
 
 - Private reply keeps the request and answer inside the bot.
+- For private tickets, both sides can continue the same conversation by replying in the bot thread.
 - The bot receives the user's Telegram display name, username, and routing ID to deliver replies.
 - Before submission, the user can choose whether those Telegram details stay visible in the mentor view.
 - Public answer keeps the user identity private and publishes only a minimal anonymous version of the request.

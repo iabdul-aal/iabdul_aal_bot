@@ -11,6 +11,7 @@ This repository contains a Telegram mentorship bot with:
 - Optional hiding of Telegram contact details in mentor view
 - Anonymous public answer support
 - Ticket tracking
+- Private-thread reply routing through the bot
 - Discussion-group and channel publishing
 
 ## Before you start
