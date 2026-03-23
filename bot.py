@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from telegram import (
@@ -35,11 +36,30 @@ load_dotenv()
 
 DEFAULT_MENTOR_LABEL = "your mentor"
 
+
+def normalize_https_url(value: str) -> str:
+    url = (value or "").strip()
+    if not url:
+        return ""
+
+    if "://" not in url:
+        url = f"https://{url.lstrip('/')}"
+
+    parsed = urlsplit(url)
+    if not parsed.netloc:
+        return ""
+    if any(char.isspace() for char in parsed.netloc):
+        return ""
+    if "." not in parsed.netloc and parsed.netloc.lower() != "localhost":
+        return ""
+
+    return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
 MENTOR_LABEL = (os.getenv("MENTOR_LABEL") or DEFAULT_MENTOR_LABEL).strip()
-PUBLIC_CHANNEL_URL = (os.getenv("PUBLIC_CHANNEL_URL") or "").strip()
-DISCUSSION_GROUP_URL = (os.getenv("DISCUSSION_GROUP_URL") or "").strip()
+PUBLIC_CHANNEL_URL = normalize_https_url(os.getenv("PUBLIC_CHANNEL_URL") or "")
+DISCUSSION_GROUP_URL = normalize_https_url(os.getenv("DISCUSSION_GROUP_URL") or "")
 DISCUSSION_GROUP_ID_RAW = (os.getenv("DISCUSSION_GROUP_ID") or "").strip()
 PUBLIC_CHANNEL_ID_RAW = (os.getenv("PUBLIC_CHANNEL_ID") or "").strip()
 DATA_DIR = Path(
@@ -497,6 +517,7 @@ def build_contact_visibility_prompt(user) -> str:
 
 
 def build_public_notice(ticket_id: int, link: str) -> str:
+    link = normalize_https_url(link)
     if link:
         return f"Your public answer for ticket #{ticket_id} is ready:\n{link}"
     return (
@@ -506,6 +527,7 @@ def build_public_notice(ticket_id: int, link: str) -> str:
 
 
 def build_public_answer_message(ticket_id: int, answer_text: str, link: str) -> str:
+    link = normalize_https_url(link)
     lines = [f"Public answer for ticket #{ticket_id}"]
     if answer_text:
         lines.extend(["", answer_text])
@@ -1640,6 +1662,7 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
             "I could not publish the public answer. Configure /setdiscussion or /setchannel, or use /markpublic with a manual link."
         )
         return
+    public_link = normalize_https_url(public_link)
 
     user_id = submission.get("user", {}).get("id")
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
@@ -1682,7 +1705,10 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if ticket_id is None:
             await update.message.reply_text("Ticket numbers must be numeric.")
             return
-        public_link = context.args[1].strip() if len(context.args) > 1 else ""
+        public_link = normalize_https_url(context.args[1]) if len(context.args) > 1 else ""
+        if len(context.args) > 1 and not public_link:
+            await update.message.reply_text("Public links must be valid https URLs.")
+            return
         _, _, submission = find_submission(ticket_id)
     elif update.message.reply_to_message and is_discussion_group(
         context, update.effective_chat.id if update.effective_chat else None
@@ -1751,6 +1777,7 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
     ticket_id = int(submission["id"])
     user_id = submission.get("user", {}).get("id")
     public_link = getattr(update.message, "link", "") or ""
+    public_link = normalize_https_url(public_link)
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
 
     try:

@@ -37,6 +37,8 @@ PUBLIC_CHANNEL_ID=
 DATA_DIR=./data
 ```
 
+If `PUBLIC_CHANNEL_URL` or `DISCUSSION_GROUP_URL` are set, use public `https://...` links.
+
 3. Install dependencies:
 
 ```bash

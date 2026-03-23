@@ -40,6 +40,8 @@ PUBLIC_CHANNEL_ID=
 DATA_DIR=./data
 ```
 
+If you set `PUBLIC_CHANNEL_URL` or `DISCUSSION_GROUP_URL`, use the public `https://...` link form. The bot normalizes these to HTTPS.
+
 `ADMIN_ID` can stay empty at first. After the bot is running, open it in Telegram and send `/claimadmin` from the admin account.
 
 If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP_ID` empty and run `/setdiscussion` in your private admin chat with the bot, then choose the group from Telegram's picker.
@@ -56,7 +58,7 @@ The configured admin account must also be an admin there so Telegram can offer t
 - Before submission, the user can choose whether those Telegram details stay visible in the mentor view.
 - Public answer keeps the user identity private and publishes only a minimal anonymous version of the request.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
-- `/markpublic` is still available if the public answer was posted manually somewhere else.
+- `/markpublic` is still available if the public answer was posted manually somewhere else, and manual links are normalized to HTTPS.
 
 ## Railway deployment
 
