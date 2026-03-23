@@ -418,7 +418,6 @@ def build_user_commands() -> list[BotCommand]:
     commands = [
         BotCommand("start", "Open the request bot"),
         BotCommand("quick", "Send a one-message request"),
-        BotCommand("ask", "Add more context step by step"),
         BotCommand("followup", "Continue a public ticket by ticket ID"),
     ]
     if feature_booking_enabled():
@@ -458,7 +457,7 @@ def build_setup_commands() -> list[BotCommand]:
 
 
 def build_user_main_menu() -> list[list[object]]:
-    rows: list[list[object]] = [[QUICK_QUESTION_LABEL, GUIDED_REQUEST_LABEL]]
+    rows: list[list[object]] = [[QUICK_QUESTION_LABEL]]
     secondary_row: list[object] = []
     if feature_booking_enabled():
         secondary_row.append(BOOK_MEETING_LABEL)
@@ -1943,13 +1942,13 @@ def build_profile_markup() -> InlineKeyboardMarkup | None:
 def build_user_start_message() -> str:
     mentor_name = escape_html(MENTOR_LABEL or DEFAULT_MENTOR_LABEL)
     lines = ["<b>Welcome</b>"]
-    lines.append(f"You're writing to <b>{mentor_name}</b>.")
+    lines.append(f"Free mentorship with <b>{mentor_name}</b>.")
     lines.extend(
         [
             "",
             "<b>Start here</b>",
             f"- <b>{escape_html(QUICK_QUESTION_LABEL)}</b> for the fastest mentorship question",
-            f"- <b>{escape_html(GUIDED_REQUEST_LABEL)}</b> if you want to add a little more context",
+            "- If context matters, include it in the same message",
         ]
     )
     if feature_booking_enabled():
@@ -1973,8 +1972,8 @@ def build_user_help_message() -> str:
         "<b>How this works</b>",
         "- This bot is mainly for mentorship questions",
         f"- <b>{escape_html(QUICK_QUESTION_LABEL)}</b> is the default and fastest option",
-        f"- <b>{escape_html(GUIDED_REQUEST_LABEL)}</b> is there when one extra detail would help",
         "- Start with one clear question",
+        "- Put any useful context in the same message",
         "- Use /status <ticket> to check progress",
         "- Use /cancel to stop the current guided flow",
     ]
@@ -1994,6 +1993,46 @@ def build_user_help_message() -> str:
     if feature_channel_updates_enabled():
         lines.append("- /muteupdates and /resumeupdates control channel updates in the bot")
     return "\n".join(lines)
+
+
+def mentor_brand_snippet() -> str:
+    ignored = {"regards", "best", "thanks", "thank you", "from"}
+    mentor_name = (MENTOR_LABEL or DEFAULT_MENTOR_LABEL).strip().lower()
+    for raw_line in MENTOR_IDENTITY_TEXT.splitlines():
+        line = raw_line.strip()
+        lowered = line.lower().rstrip(",:")
+        if not line:
+            continue
+        if lowered in ignored:
+            continue
+        if "@" in line or "http" in lowered or ".com" in lowered or ".io" in lowered:
+            continue
+        if mentor_name and lowered == mentor_name:
+            continue
+        return trim_text(line, 90)
+    return ""
+
+
+def build_start_brand_message() -> str:
+    mentor_name = escape_html(MENTOR_LABEL or DEFAULT_MENTOR_LABEL)
+    lines = [f"<b>About {mentor_name}</b>"]
+    snippet = mentor_brand_snippet()
+    if snippet:
+        lines.append(escape_html(snippet))
+    if cta_channel_url():
+        lines.extend(["", "Follow the channel for public notes and updates."])
+    return "\n".join(lines)
+
+
+def build_start_brand_markup() -> InlineKeyboardMarkup | None:
+    buttons: list[InlineKeyboardButton] = []
+    channel_url = cta_channel_url()
+    about_url = website_page_url("about") or cta_website_url() or linkedin_url()
+    if channel_url:
+        buttons.append(InlineKeyboardButton("Follow channel", url=channel_url))
+    if about_url:
+        buttons.append(InlineKeyboardButton("About mentor", url=about_url))
+    return build_inline_markup(buttons)
 
 
 def build_user_cta_lines(ticket_id: int | None = None, submission: dict | None = None) -> list[str]:
@@ -3931,6 +3970,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         build_keyboard(MAIN_MENU),
         parse_mode="HTML",
     )
+    start_brand_markup = build_start_brand_markup()
+    if start_brand_markup is not None:
+        await update.message.reply_text(
+            build_start_brand_message(),
+            reply_markup=start_brand_markup,
+            parse_mode="HTML",
+            link_preview_options=NO_PREVIEW,
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -6121,7 +6168,6 @@ def main() -> None:
     validate_storage_configuration()
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-    guided_request_pattern = rf"^{re.escape(GUIDED_REQUEST_LABEL)}$"
     quick_question_pattern = rf"^{re.escape(QUICK_QUESTION_LABEL)}$"
     how_it_works_pattern = rf"^{re.escape(HOW_IT_WORKS_LABEL)}$"
     response_times_pattern = rf"^{re.escape(RESPONSE_TIMES_LABEL)}$"
@@ -6135,11 +6181,6 @@ def main() -> None:
 
     conversation = ConversationHandler(
         entry_points=[
-            CommandHandler("ask", start_request, filters=filters.ChatType.PRIVATE),
-            MessageHandler(
-                filters.ChatType.PRIVATE & filters.Regex(guided_request_pattern) & ~filters.REPLY,
-                start_request,
-            ),
             CommandHandler("quick", begin_quick_request, filters=filters.ChatType.PRIVATE),
             MessageHandler(
                 filters.ChatType.PRIVATE & filters.Regex(quick_question_pattern) & ~filters.REPLY,
@@ -6150,7 +6191,6 @@ def main() -> None:
                 & filters.TEXT
                 & ~filters.REPLY
                 & ~filters.COMMAND
-                & ~filters.Regex(guided_request_pattern)
                 & ~filters.Regex(quick_question_pattern)
                 & ~filters.Regex(response_times_pattern)
                 & ~filters.Regex(book_meeting_pattern)
