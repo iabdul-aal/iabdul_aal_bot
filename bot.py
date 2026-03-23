@@ -79,6 +79,7 @@ CALENDLY_TEXT = decode_env_text(
 )
 CTA_CHANNEL_URL = normalize_https_url(os.getenv("CTA_CHANNEL_URL") or "")
 CTA_WEBSITE_URL = normalize_https_url(os.getenv("CTA_WEBSITE_URL") or "")
+CTA_SERVICES_URL = normalize_https_url(os.getenv("CTA_SERVICES_URL") or "")
 CTA_EXTRA_TEXT = decode_env_text(os.getenv("CTA_EXTRA_TEXT") or "")
 MENTOR_AVAILABILITY_TEXT = (
     os.getenv("MENTOR_AVAILABILITY_TEXT")
@@ -104,13 +105,16 @@ SUBMISSIONS_FILE = DATA_DIR / "submissions.jsonl"
 TAGS_FILE = DATA_DIR / "saved_tags.json"
 USERS_FILE = DATA_DIR / "known_users.json"
 
-TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONTACT_VISIBILITY, CONFIRM, QUICK_QUESTION = range(11)
+REQUEST_KIND, TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONTACT_VISIBILITY, CONFIRM, QUICK_QUESTION = range(12)
 
 GUIDED_REQUEST_LABEL = "Guided request"
 QUICK_QUESTION_LABEL = "Quick question"
 HOW_IT_WORKS_LABEL = "How it works"
 RESPONSE_TIMES_LABEL = "Response times"
 BOOK_MEETING_LABEL = "Book a meeting"
+SERVICES_LABEL = "Get other services"
+CONTACT_LABEL = "Contact"
+WEBSITE_LABEL = "Browse website"
 DASHBOARD_LABEL = "Dashboard"
 TEMPLATES_LABEL = "Templates"
 TAGS_LABEL = "Tags"
@@ -126,12 +130,27 @@ CANCEL_LABEL = "Cancel"
 SKIP_LABEL = "Skip"
 PICK_CHANNEL_LABEL = "Choose channel"
 PICK_DISCUSSION_LABEL = "Choose discussion group"
+MENTORSHIP_REQUEST_LABEL = "Mentorship"
+TECHNICAL_SERVICE_LABEL = "Technical service"
+RESEARCH_COLLABORATION_LABEL = "Research collaboration"
+SPEAKING_WORKSHOP_LABEL = "Speaking or workshop"
+OTHER_REQUEST_LABEL = "Other"
 
 CHANNEL_PICKER_REQUEST_ID = 7001
 DISCUSSION_PICKER_REQUEST_ID = 7002
 
-MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL, RESPONSE_TIMES_LABEL], [BOOK_MEETING_LABEL]]
+MAIN_MENU = [
+    [GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL],
+    [HOW_IT_WORKS_LABEL, RESPONSE_TIMES_LABEL],
+    [BOOK_MEETING_LABEL, SERVICES_LABEL],
+    [CONTACT_LABEL, WEBSITE_LABEL],
+]
 ADMIN_MENU = [[DASHBOARD_LABEL, TEMPLATES_LABEL], [TAGS_LABEL, RESPONSE_TIMES_LABEL]]
+REQUEST_KIND_MENU = [
+    [MENTORSHIP_REQUEST_LABEL, TECHNICAL_SERVICE_LABEL],
+    [RESEARCH_COLLABORATION_LABEL, SPEAKING_WORKSHOP_LABEL],
+    [OTHER_REQUEST_LABEL],
+]
 TRACK_MENU = [
     ["Research direction", "Technical guidance"],
     ["Project review", "Academic growth"],
@@ -149,21 +168,44 @@ CONTACT_VISIBILITY_MENU = [[SHOW_CONTACT_LABEL, HIDE_CONTACT_LABEL]]
 IDENTITY_VISIBILITY_CHOICES = {SHOW_IDENTITY_LABEL, HIDE_IDENTITY_LABEL}
 CONFIRM_MENU = [[SUBMIT_LABEL, RESTART_LABEL], [CANCEL_LABEL]]
 SKIP_MENU = [[SKIP_LABEL]]
+WEBSITE_NAV_ITEMS = [
+    ("About", "about"),
+    ("Publications", "publications"),
+    ("Projects", "projects"),
+    ("Materials", "materials"),
+    ("Talks", "talks"),
+    ("Services", "services"),
+    ("Articles", "articles"),
+    ("Ventures", "ventures"),
+    ("Contact", "contact"),
+    ("CV", "cv"),
+]
+PROFILE_SCOPE_LINES = [
+    "Mentorship and technical guidance",
+    "Photonic device design support",
+    "Research workflow engineering",
+    "Physics-informed optimization support",
+]
 
 TRACK_CHOICES = {item for row in TRACK_MENU for item in row}
 LEVEL_CHOICES = {item for row in LEVEL_MENU for item in row}
 URGENCY_CHOICES = {item for row in URGENCY_MENU for item in row}
 ANSWER_MODE_CHOICES = {item for row in ANSWER_MODE_MENU for item in row}
 CONTACT_VISIBILITY_CHOICES = {item for row in CONTACT_VISIBILITY_MENU for item in row}
+REQUEST_KIND_CHOICES = {item for row in REQUEST_KIND_MENU for item in row}
 TAG_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 TAG_PLACEHOLDER_PATTERN = re.compile(r"\{\{([a-zA-Z0-9_-]+)\}\}")
 
 USER_COMMANDS = [
-    BotCommand("start", "Open the mentorship bot"),
-    BotCommand("ask", "Start a guided mentorship request"),
-    BotCommand("quick", "Send a one-message question"),
+    BotCommand("start", "Open the request bot"),
+    BotCommand("ask", "Start a guided request"),
+    BotCommand("quick", "Send a one-message request"),
     BotCommand("followup", "Continue a public ticket by ticket ID"),
     BotCommand("meeting", "Open the Calendly meeting link"),
+    BotCommand("services", "Open the website services page"),
+    BotCommand("contact", "Open direct contact routes"),
+    BotCommand("website", "Browse the website sections"),
+    BotCommand("profile", "Open the profile snapshot"),
     BotCommand("availability", "See response windows"),
     BotCommand("help", "See how the bot works"),
     BotCommand("muteupdates", "Stop channel news broadcasts in the bot"),
@@ -180,6 +222,15 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("adminstatus", "Show the current admin ID"),
     BotCommand("storagestatus", "Show queue storage status"),
     BotCommand("dashboard", "Show the mentor dashboard"),
+    BotCommand("ticket", "Show one ticket by ID"),
+    BotCommand("tickets", "List tickets by queue state"),
+    BotCommand("note", "Add an internal note to a ticket"),
+    BotCommand("notes", "Show ticket notes"),
+    BotCommand("todo", "Add a checklist item to a ticket"),
+    BotCommand("todos", "Show ticket checklist"),
+    BotCommand("tododone", "Mark a checklist item done"),
+    BotCommand("todoundo", "Reopen a checklist item"),
+    BotCommand("todoremind", "Set a checklist reminder"),
     BotCommand("templates", "List ready reply templates"),
     BotCommand("tags", "List available saved tags"),
     BotCommand("savetag", "Save a reusable reply tag"),
@@ -188,7 +239,7 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("discussionstatus", "Show the linked discussion group"),
     BotCommand("setchannel", "Bind the public answer channel"),
     BotCommand("channelstatus", "Show the public answer channel"),
-    BotCommand("stats", "Show mentorship request statistics"),
+    BotCommand("stats", "Show request statistics"),
     BotCommand("reply", "Send a private answer to a ticket"),
     BotCommand("sendmeeting", "Send a ticket-specific meeting invite"),
     BotCommand("meetingstatus", "Show Calendly booking setup"),
@@ -280,6 +331,34 @@ FAST_REPLY_TEMPLATES = {
     },
 }
 
+DEFAULT_ADMIN_TICKET_LIST_LIMIT = 10
+MAX_ADMIN_TICKET_LIST_LIMIT = 25
+MAX_TICKET_NOTES_PREVIEW = 6
+TODO_REMINDER_SWEEP_SECONDS = 300
+TICKET_LIST_SCOPE_ALIASES = {
+    "queue": "queue",
+    "waiting": "queue",
+    "open": "queue",
+    "private": "awaiting_private",
+    "public": "awaiting_public",
+    "waiting_user": "waiting_user",
+    "user": "waiting_user",
+    "ended": "done_closed",
+    "closed": "done_closed",
+    "all": "all",
+}
+TODO_OWNER_ALIASES = {
+    "admin": "admin",
+    "me": "admin",
+    "self": "admin",
+    "internal": "admin",
+    "user": "user",
+    "requester": "user",
+    "client": "user",
+    "them": "user",
+    "him": "user",
+}
+
 
 def parse_numeric_id(value: str) -> int | None:
     value = value.strip()
@@ -307,6 +386,12 @@ def chunk_items(items: list, size: int) -> list[list]:
 def build_copy_button(label: str, value: str) -> InlineKeyboardButton:
     text = (value[:256] if value else label).strip("\n")
     return InlineKeyboardButton(label, copy_text=CopyTextButton(text))
+
+
+def build_inline_markup(buttons: list[InlineKeyboardButton], columns: int = 2) -> InlineKeyboardMarkup | None:
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(chunk_items(buttons, columns))
 
 
 def env_flag(value: str, default: bool) -> bool:
@@ -392,6 +477,16 @@ def read_env_tags() -> dict[str, str]:
         if name and text:
             tags[name] = text
     return dict(sorted(tags.items()))
+
+
+def read_configured_tag(name: str) -> str:
+    normalized_name = normalize_tag_name(name)
+    if not normalized_name:
+        return ""
+    saved_tags = read_saved_tags()
+    if normalized_name in saved_tags:
+        return saved_tags[normalized_name].strip()
+    return read_env_tags().get(normalized_name, "").strip()
 
 
 def read_known_users() -> dict[str, dict]:
@@ -566,7 +661,7 @@ def storage_mode() -> str:
 
 
 def require_persistent_storage() -> bool:
-    return env_flag(REQUIRE_PERSISTENT_STORAGE_RAW, is_running_on_railway())
+    return env_flag(REQUIRE_PERSISTENT_STORAGE_RAW, False)
 
 
 def build_storage_status_message() -> str:
@@ -623,6 +718,11 @@ def validate_storage_configuration() -> None:
             "Persistent queue storage is not configured for Railway.\n"
             "Attach a Railway Volume and mount it to /app/data, or set DATA_DIR to the mounted volume path.\n"
             "If you intentionally want ephemeral storage, set REQUIRE_PERSISTENT_STORAGE=false."
+        )
+    if mode == "railway_ephemeral":
+        logger.warning(
+            "Railway volume not detected. Queue data is running on ephemeral storage and may reset on deploy or restart. "
+            "Set REQUIRE_PERSISTENT_STORAGE=true after attaching a Railway Volume if you want startup to enforce persistence."
         )
 
 
@@ -792,6 +892,32 @@ def save_submission(record: dict) -> None:
         os.replace(temp_file, SUBMISSIONS_FILE)
 
 
+def mutate_submission(
+    ticket_id: int,
+    mutate_callback,
+) -> dict | None:
+    with STORAGE_LOCK:
+        submissions = _read_submissions_unlocked()
+        for index, submission in enumerate(submissions):
+            if int(submission.get("id", 0)) != ticket_id:
+                continue
+
+            updated_at = datetime.now(timezone.utc).isoformat()
+            changed = mutate_callback(submission, updated_at)
+            if not changed:
+                return submission
+
+            submission["updated_at"] = updated_at
+            submissions[index] = submission
+            temp_file = SUBMISSIONS_FILE.with_suffix(".tmp")
+            with temp_file.open("w", encoding="utf-8") as handle:
+                for item in submissions:
+                    handle.write(json.dumps(item, ensure_ascii=True) + "\n")
+            os.replace(temp_file, SUBMISSIONS_FILE)
+            return submission
+    return None
+
+
 def append_response(ticket_id: int, status: str, response: dict) -> dict | None:
     with STORAGE_LOCK:
         submissions = _read_submissions_unlocked()
@@ -816,6 +942,13 @@ def append_response(ticket_id: int, status: str, response: dict) -> dict | None:
 
 def timestamp_now() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def format_display_datetime(value: str | None) -> str:
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return "Not set"
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def format_status(status: str) -> str:
@@ -851,6 +984,80 @@ def answer_mode_policy_text(value: str) -> str:
 
 def answer_mode_policy_short(value: str) -> str:
     return "Public flexible" if allows_public_reply(value) else "Private only"
+
+
+def normalize_request_kind(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {MENTORSHIP_REQUEST_LABEL.lower(), "mentor", "mentorship"}:
+        return "mentorship"
+    if lowered in {TECHNICAL_SERVICE_LABEL.lower(), "service", "technical service", "technical_support"}:
+        return "technical_service"
+    if lowered in {RESEARCH_COLLABORATION_LABEL.lower(), "collaboration", "research collaboration"}:
+        return "research_collaboration"
+    if lowered in {SPEAKING_WORKSHOP_LABEL.lower(), "speaking", "workshop", "speaking or workshop"}:
+        return "speaking_workshop"
+    return "other"
+
+
+def format_request_kind(value: str) -> str:
+    labels = {
+        "mentorship": MENTORSHIP_REQUEST_LABEL,
+        "technical_service": TECHNICAL_SERVICE_LABEL,
+        "research_collaboration": RESEARCH_COLLABORATION_LABEL,
+        "speaking_workshop": SPEAKING_WORKSHOP_LABEL,
+        "other": OTHER_REQUEST_LABEL,
+    }
+    return labels.get(normalize_request_kind(value), OTHER_REQUEST_LABEL)
+
+
+def short_request_kind_label(value: str) -> str:
+    labels = {
+        "mentorship": "Mentorship",
+        "technical_service": "Service",
+        "research_collaboration": "Collab",
+        "speaking_workshop": "Speaking",
+        "other": "Other",
+    }
+    return labels.get(normalize_request_kind(value), "Other")
+
+
+def track_menu_for_request_kind(value: str) -> list[list[str]]:
+    normalized_kind = normalize_request_kind(value)
+    menus = {
+        "mentorship": TRACK_MENU,
+        "technical_service": [
+            ["Photonic design", "Simulation workflow"],
+            ["Physics-informed optimization", "Research workflow"],
+            ["Technical review", "Write my own"],
+        ],
+        "research_collaboration": [
+            ["Joint research", "Project collaboration"],
+            ["Student project support", "Publication planning"],
+            ["Lab or team support", "Write my own"],
+        ],
+        "speaking_workshop": [
+            ["Talk invitation", "Workshop"],
+            ["Panel or Q&A", "Student session"],
+            ["Community event", "Write my own"],
+        ],
+    }
+    return menus.get(normalized_kind, TRACK_MENU)
+
+
+def build_track_prompt(value: str) -> str:
+    prompts = {
+        "mentorship": "Choose the topic that fits your request best.",
+        "technical_service": "Choose the service scope that fits your request best.",
+        "research_collaboration": "Choose the collaboration area that fits your request best.",
+        "speaking_workshop": "Choose the speaking or workshop topic that fits your request best.",
+        "other": "Choose the topic that fits your request best.",
+    }
+    prompt = prompts.get(normalize_request_kind(value), prompts["other"])
+    return f"{prompt}\nYou can tap a suggestion or write your own topic."
+
+
+def intake_total_steps(mode: str) -> int:
+    return 4 if mode == "quick" else 10
 
 
 def is_specific_track(value: str) -> bool:
@@ -986,6 +1193,11 @@ def suggest_quick_reply_template(request: dict) -> str | None:
 
 def build_fast_route_hint(request: dict) -> str:
     quality = assess_request_quality(request)
+    request_kind = normalize_request_kind(request.get("request_kind", ""))
+    if request_kind in {"technical_service", "research_collaboration", "speaking_workshop"} and allows_public_reply(
+        request.get("answer_mode", "private")
+    ):
+        return "Consider a private reply first. Scoped work and collaboration requests are usually handled best privately."
     if int(quality["score"]) < 55:
         return "Ask for one sharper round of context before giving a detailed answer."
     if request.get("goal") == "Not provided" and request.get("challenge") == "Not provided":
@@ -1011,6 +1223,7 @@ def build_fast_read_section(request: dict, ticket_id: int | str) -> str:
     )
     return (
         "Fast read\n"
+        f"Request type: {format_request_kind(request.get('request_kind', 'mentorship'))}\n"
         f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
         f"Main ask: {trim_text(request['question'], 180)}\n"
         f"Wanted outcome: {trim_text(request['goal'], 140)}\n"
@@ -1089,13 +1302,13 @@ def normalize_contact_visibility(value: str) -> str:
 
 
 def format_contact_visibility(value: str) -> str:
-    return "Hidden from mentor view" if normalize_contact_visibility(value) == "hidden" else "Shown to mentor"
+    return "Hidden from admin view" if normalize_contact_visibility(value) == "hidden" else "Shown to admin"
 
 
 def format_source(value: str) -> str:
     labels = {
         "guided_flow": "Guided request",
-        "quick_message": "Quick question",
+        "quick_message": "Quick request",
     }
     return labels.get(value, value.replace("_", " ").title())
 
@@ -1129,10 +1342,13 @@ def sanitize_public_text(value: str, limit: int) -> str:
 
 def build_public_prompt(payload: dict) -> str:
     sections: list[str] = []
+    request_kind = normalize_request_kind(payload.get("request_kind", ""))
     goal = sanitize_public_text(payload.get("goal", ""), 180)
     challenge = sanitize_public_text(payload.get("challenge", ""), 220)
     question = sanitize_public_text(payload.get("question", ""), 420)
 
+    if request_kind != "mentorship":
+        sections.append(f"Request type:\n{format_request_kind(request_kind)}")
     if goal and goal != "Not provided":
         sections.append(f"Goal:\n{goal}")
     if challenge and challenge != "Not provided":
@@ -1159,7 +1375,7 @@ def build_public_destination_text() -> str:
 def calendly_url() -> str:
     if CALENDLY_URL:
         return CALENDLY_URL
-    return normalize_https_url(read_env_tags().get("booking", ""))
+    return normalize_https_url(read_configured_tag("booking"))
 
 
 def booking_enabled() -> bool:
@@ -1194,7 +1410,7 @@ def build_meeting_link(ticket_id: int | None = None, submission: dict | None = N
 
     params = {
         "utm_source": "telegram-bot",
-        "utm_medium": "mentorship",
+        "utm_medium": "request-bot",
     }
     if ticket_id is not None:
         params["utm_campaign"] = f"ticket-{ticket_id}"
@@ -1247,9 +1463,7 @@ def build_meeting_markup(link: str, ticket_id: int | None = None, admin: bool = 
         buttons.append(build_copy_button("Copy meeting link", link))
     if admin and ticket_id is not None:
         buttons.append(build_copy_button("Copy /sendmeeting", f"/sendmeeting {ticket_id}"))
-    if not buttons:
-        return None
-    return InlineKeyboardMarkup(chunk_items(buttons, 2))
+    return build_inline_markup(buttons)
 
 
 def build_meeting_status_message() -> str:
@@ -1273,6 +1487,32 @@ def build_meeting_status_message() -> str:
     )
 
 
+def build_services_message() -> str:
+    link = cta_services_url()
+    if not link:
+        return (
+            "The services page is not configured yet.\n"
+            "Set CTA_SERVICES_URL directly, or set CTA_WEBSITE_URL or TAG_WEBSITE so the bot can open /services."
+        )
+
+    return (
+        f"{SERVICES_LABEL}\n\n"
+        "Use the website services page for scoped technical work, collaboration support, or deeper service context.\n\n"
+        f"Open here: {link}"
+    )
+
+
+def build_services_markup(link: str) -> InlineKeyboardMarkup | None:
+    if not link:
+        return None
+
+    buttons = [
+        InlineKeyboardButton("Open services page", url=link),
+        build_copy_button("Copy services link", link),
+    ]
+    return build_inline_markup(buttons)
+
+
 def cta_channel_url() -> str:
     return CTA_CHANNEL_URL or PUBLIC_CHANNEL_URL
 
@@ -1280,21 +1520,242 @@ def cta_channel_url() -> str:
 def cta_website_url() -> str:
     if CTA_WEBSITE_URL:
         return CTA_WEBSITE_URL
-    return normalize_https_url(read_env_tags().get("website", ""))
+    return normalize_https_url(read_configured_tag("website"))
+
+
+def configured_url_tag(name: str) -> str:
+    return normalize_https_url(read_configured_tag(name))
+
+
+def website_page_url(section: str) -> str:
+    normalized_section = (section or "").strip().strip("/")
+    if not normalized_section:
+        return cta_website_url()
+
+    direct_url = configured_url_tag(normalized_section)
+    if direct_url:
+        return direct_url
+
+    website_url = cta_website_url()
+    if not website_url:
+        return ""
+
+    parsed = urlsplit(website_url)
+    base_path = parsed.path.rstrip("/")
+    section_path = f"/{normalized_section}"
+    if base_path == section_path or base_path.endswith(section_path):
+        page_path = base_path
+    else:
+        page_path = f"{base_path}/{normalized_section}" if base_path else section_path
+    return urlunsplit((parsed.scheme, parsed.netloc, page_path, "", ""))
+
+
+def contact_page_url() -> str:
+    return website_page_url("contact")
+
+
+def cv_page_url() -> str:
+    return website_page_url("cv")
+
+
+def contact_email() -> str:
+    value = read_configured_tag("email")
+    if not value or "@" not in value or any(char.isspace() for char in value):
+        return ""
+    return value
+
+
+def linkedin_url() -> str:
+    return configured_url_tag("linkedin")
+
+
+def whatsapp_url() -> str:
+    return configured_url_tag("whatsapp")
+
+
+def github_url() -> str:
+    return configured_url_tag("github")
+
+
+def orcid_url() -> str:
+    return configured_url_tag("orcid")
+
+
+def scholar_url() -> str:
+    return configured_url_tag("scholar")
+
+
+def cta_services_url() -> str:
+    if CTA_SERVICES_URL:
+        return CTA_SERVICES_URL
+    return website_page_url("services")
+
+
+def build_contact_message() -> str:
+    methods: list[str] = []
+    email = contact_email()
+    contact_url = contact_page_url()
+    booking_url = calendly_url()
+    linkedin = linkedin_url()
+    whatsapp = whatsapp_url()
+    if contact_url:
+        methods.append(f"Contact page: {contact_url}")
+    if booking_url:
+        methods.append(f"Schedule: {booking_url}")
+    if linkedin:
+        methods.append(f"LinkedIn: {linkedin}")
+    if whatsapp:
+        methods.append(f"WhatsApp: {whatsapp}")
+    if email:
+        methods.append(f"Email: {email}")
+
+    if not methods:
+        return (
+            "Direct contact routes are not configured yet.\n"
+            "Set CTA_WEBSITE_URL or TAG_CONTACT first, and optionally define tags like TAG_EMAIL, TAG_LINKEDIN, or TAG_WHATSAPP."
+        )
+
+    return (
+        "Contact routes\n\n"
+        "Use the route that matches the request. Detailed async requests fit email or the contact page best. "
+        "Live scoping fits the booking link. Short routing conversations fit LinkedIn or WhatsApp.\n\n"
+        + "\n".join(methods)
+    )
+
+
+def build_contact_markup() -> InlineKeyboardMarkup | None:
+    buttons: list[InlineKeyboardButton] = []
+    contact_url = contact_page_url()
+    booking_url = calendly_url()
+    linkedin = linkedin_url()
+    whatsapp = whatsapp_url()
+    email = contact_email()
+    if contact_url:
+        buttons.append(InlineKeyboardButton("Open contact page", url=contact_url))
+    if booking_url:
+        buttons.append(InlineKeyboardButton("Book a call", url=booking_url))
+    if linkedin:
+        buttons.append(InlineKeyboardButton("LinkedIn", url=linkedin))
+    if whatsapp:
+        buttons.append(InlineKeyboardButton("WhatsApp", url=whatsapp))
+    if email:
+        buttons.append(build_copy_button("Copy email", email))
+    return build_inline_markup(buttons)
+
+
+def website_navigation_links() -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
+    website_url = cta_website_url()
+    if website_url:
+        links.append(("Home", website_url))
+    for label, section in WEBSITE_NAV_ITEMS:
+        url = website_page_url(section)
+        if url:
+            links.append((label, url))
+    return links
+
+
+def build_website_message() -> str:
+    links = website_navigation_links()
+    if not links:
+        return (
+            "The website is not configured yet.\n"
+            "Set CTA_WEBSITE_URL or TAG_WEBSITE so the bot can open the website sections."
+        )
+
+    section_labels = ", ".join(label for label, _ in links)
+    return (
+        "Website hub\n\n"
+        "Open the public website sections below for background, publications, talks, projects, materials, and broader service context.\n\n"
+        f"Available now: {section_labels}"
+    )
+
+
+def build_website_markup() -> InlineKeyboardMarkup | None:
+    buttons = [InlineKeyboardButton(label, url=url) for label, url in website_navigation_links()]
+    website_url = cta_website_url()
+    if website_url:
+        buttons.append(build_copy_button("Copy website", website_url))
+    return build_inline_markup(buttons)
+
+
+def build_profile_message() -> str:
+    about_url = website_page_url("about") or cta_website_url()
+    publications_url = website_page_url("publications")
+    talks_url = website_page_url("talks")
+    projects_url = website_page_url("projects")
+    services_url = cta_services_url()
+    cv_url = cv_page_url()
+    lines = [
+        "Profile snapshot",
+        "",
+        "This bot is the private intake path. The website carries the public profile, publications, talks, projects, and broader service scope.",
+        "",
+        "Current scope",
+    ]
+    lines.extend(f"- {item}" for item in PROFILE_SCOPE_LINES)
+    if about_url or publications_url or talks_url or projects_url or services_url or cv_url:
+        lines.extend(
+            [
+                "",
+                f"Primary profile: {about_url or cta_website_url()}",
+                f"Services: {services_url}" if services_url else "",
+                f"Publications: {publications_url}" if publications_url else "",
+                f"Talks: {talks_url}" if talks_url else "",
+                f"Projects: {projects_url}" if projects_url else "",
+                f"CV: {cv_url}" if cv_url else "",
+            ]
+        )
+    return "\n".join(line for line in lines if line)
+
+
+def build_profile_markup() -> InlineKeyboardMarkup | None:
+    buttons: list[InlineKeyboardButton] = []
+    about_url = website_page_url("about") or cta_website_url()
+    publications_url = website_page_url("publications")
+    talks_url = website_page_url("talks")
+    projects_url = website_page_url("projects")
+    services_url = cta_services_url()
+    cv_url = cv_page_url()
+    github = github_url()
+    orcid = orcid_url()
+    scholar = scholar_url()
+    if about_url:
+        buttons.append(InlineKeyboardButton("About", url=about_url))
+    if publications_url:
+        buttons.append(InlineKeyboardButton("Publications", url=publications_url))
+    if talks_url:
+        buttons.append(InlineKeyboardButton("Talks", url=talks_url))
+    if projects_url:
+        buttons.append(InlineKeyboardButton("Projects", url=projects_url))
+    if services_url:
+        buttons.append(InlineKeyboardButton("Services", url=services_url))
+    if cv_url:
+        buttons.append(InlineKeyboardButton("CV", url=cv_url))
+    if github:
+        buttons.append(InlineKeyboardButton("GitHub", url=github))
+    if orcid:
+        buttons.append(InlineKeyboardButton("ORCID", url=orcid))
+    if scholar:
+        buttons.append(InlineKeyboardButton("Scholar", url=scholar))
+    return build_inline_markup(buttons)
 
 
 def build_user_cta_lines(ticket_id: int | None = None, submission: dict | None = None) -> list[str]:
     lines: list[str] = []
     channel_url = cta_channel_url()
     website_url = cta_website_url()
+    services_url = cta_services_url()
     booking_url = build_meeting_link(ticket_id, submission) or calendly_url()
     if channel_url:
         lines.append(f"Follow updates: {channel_url}")
-    lines.append("Use this bot again any time for focused mentorship requests.")
+    lines.append("Use this bot again any time for focused requests.")
     if booking_url:
         lines.append(f"Book a meeting: {booking_url}")
     if website_url:
-        lines.append(f"More about the mentor: {website_url}")
+        lines.append(f"Website: {website_url}")
+    if services_url and services_url != website_url:
+        lines.append(f"Other services: {services_url}")
     if CTA_EXTRA_TEXT:
         lines.append(CTA_EXTRA_TEXT)
     return lines
@@ -1364,7 +1825,7 @@ def build_contact_visibility_prompt(user) -> str:
         f"Telegram routing ID: {user.id}\n\n"
         "Why this matters\n"
         "The bot uses this data to keep your ticket connected and deliver replies.\n"
-        "You can choose whether these details stay visible in the mentor view.\n"
+        "You can choose whether these details stay visible in the admin view.\n"
         "If you hide them, the bot still keeps the routing ID privately so answers can reach you."
     )
 
@@ -1413,6 +1874,10 @@ def build_builtin_tags() -> dict[str, str]:
     website_url = cta_website_url()
     if website_url:
         tags["cta_website"] = website_url
+    services_url = cta_services_url()
+    if services_url:
+        tags["cta_services"] = services_url
+        tags["services"] = services_url
     if DISCUSSION_GROUP_URL:
         tags["discussion_group"] = DISCUSSION_GROUP_URL
         tags["discussion"] = DISCUSSION_GROUP_URL
@@ -1533,7 +1998,7 @@ def build_availability_message() -> str:
     availability_text, _ = expand_saved_tags(MENTOR_AVAILABILITY_TEXT)
     message = (
         "What to expect\n\n"
-        "This mentorship is free and designed to stay accurate, practical, and to the point.\n"
+        "This service is designed to stay accurate, practical, and to the point.\n"
         "Requests are handled in focused batches so time can be used well across everyone.\n\n"
         f"Response windows\n{availability_text}\n\n"
         "Ticket timing\n"
@@ -1577,6 +2042,236 @@ def latest_response(submission: dict) -> dict | None:
     return responses[-1] if responses else None
 
 
+def normalize_ticket_owner(value: str) -> str | None:
+    return TODO_OWNER_ALIASES.get((value or "").strip().lower())
+
+
+def todo_owner_label(owner: str) -> str:
+    return "Admin" if owner == "admin" else "User"
+
+
+def todo_status_marker(todo: dict) -> str:
+    return "[x]" if todo.get("status") == "done" else "[ ]"
+
+
+def ticket_notes(submission: dict) -> list[dict]:
+    notes: list[dict] = []
+    for raw_note in submission.get("notes", []):
+        if not isinstance(raw_note, dict):
+            continue
+        note_id = parse_numeric_id(str(raw_note.get("id", "")))
+        text = clean_text(str(raw_note.get("text", "")), "")
+        if note_id is None or not text:
+            continue
+        notes.append(
+            {
+                "id": note_id,
+                "text": text,
+                "created_at": str(raw_note.get("created_at", "")).strip(),
+                "author": clean_text(str(raw_note.get("author", "")), "admin"),
+            }
+        )
+    return notes
+
+
+def ticket_todos(submission: dict) -> list[dict]:
+    todos: list[dict] = []
+    for raw_todo in submission.get("todos", []):
+        if not isinstance(raw_todo, dict):
+            continue
+        todo_id = parse_numeric_id(str(raw_todo.get("id", "")))
+        owner = normalize_ticket_owner(str(raw_todo.get("owner", "")))
+        text = clean_text(str(raw_todo.get("text", "")), "")
+        if todo_id is None or owner is None or not text:
+            continue
+        status = "done" if str(raw_todo.get("status", "")).strip().lower() == "done" else "open"
+        todos.append(
+            {
+                "id": todo_id,
+                "owner": owner,
+                "text": text,
+                "status": status,
+                "created_at": str(raw_todo.get("created_at", "")).strip(),
+                "updated_at": str(raw_todo.get("updated_at", "")).strip(),
+                "done_at": str(raw_todo.get("done_at", "")).strip(),
+                "remind_at": str(raw_todo.get("remind_at", "")).strip(),
+                "reminder_sent_at": str(raw_todo.get("reminder_sent_at", "")).strip(),
+            }
+        )
+    return todos
+
+
+def next_ticket_item_id(items: list[dict]) -> int:
+    return max((int(item.get("id", 0)) for item in items), default=0) + 1
+
+
+def find_ticket_todo(submission: dict, todo_id: int) -> dict | None:
+    for todo in ticket_todos(submission):
+        if int(todo.get("id", 0)) == todo_id:
+            return todo
+    return None
+
+
+def open_ticket_todos(submission: dict, owner: str | None = None) -> list[dict]:
+    todos = [todo for todo in ticket_todos(submission) if todo.get("status") != "done"]
+    if owner is not None:
+        todos = [todo for todo in todos if todo.get("owner") == owner]
+    return todos
+
+
+def count_open_ticket_todos(submission: dict, owner: str | None = None) -> int:
+    return len(open_ticket_todos(submission, owner))
+
+
+def has_open_user_todos(submission: dict) -> bool:
+    return bool(open_ticket_todos(submission, "user"))
+
+
+def parse_reminder_offset(value: str) -> timedelta | None:
+    match = re.fullmatch(r"(\d+)([mhd])", (value or "").strip().lower())
+    if match is None:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        return None
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
+
+
+def build_todo_usage() -> str:
+    return (
+        "Usage: /todo <ticket_number> <admin|user> <task>\n"
+        "Or reply to an admin-side ticket message with /todo <admin|user> <task>.\n"
+        "Examples:\n"
+        "/todo 42 user Find one referral for the target role\n"
+        "/todo 42 admin Review the next follow-up"
+    )
+
+
+def build_todo_reminder_usage() -> str:
+    return (
+        "Usage: /todoremind <ticket_number> <todo_id> <30m|2h|3d|off>\n"
+        "Or reply to an admin-side ticket message with /todoremind <todo_id> <30m|2h|3d|off>."
+    )
+
+
+def build_notes_usage() -> str:
+    return (
+        "Usage: /note <ticket_number> <text>\n"
+        "Or reply to an admin-side ticket message with /note <text>."
+    )
+
+
+def format_todo_line(todo: dict, include_owner: bool = True) -> str:
+    line = f"#{todo['id']} {todo_status_marker(todo)} {todo['text']}"
+    if include_owner:
+        line += f" | {todo_owner_label(todo['owner'])}"
+    remind_at = todo.get("remind_at")
+    if todo.get("status") != "done" and remind_at:
+        line += f" | reminder {format_display_datetime(remind_at)}"
+    if todo.get("status") == "done" and todo.get("done_at"):
+        line += f" | done {format_display_datetime(todo.get('done_at'))}"
+    return line
+
+
+def build_ticket_notes_section(submission: dict, limit: int | None = None) -> str:
+    notes = ticket_notes(submission)
+    if not notes:
+        return "Internal notes\nNone"
+
+    if limit is not None:
+        notes = notes[-limit:]
+
+    lines = ["Internal notes"]
+    for note in notes:
+        lines.extend(
+            [
+                f"#{note['id']} | {format_display_datetime(note.get('created_at'))}",
+                note["text"],
+            ]
+        )
+    return "\n".join(lines)
+
+
+def build_ticket_todos_section(submission: dict) -> str:
+    todos = ticket_todos(submission)
+    if not todos:
+        return "Checklist\nNone"
+
+    lines = ["Checklist"]
+    for todo in todos:
+        lines.append(format_todo_line(todo))
+    return "\n".join(lines)
+
+
+def build_user_todos_section(submission: dict) -> str:
+    todos = open_ticket_todos(submission, "user")
+    if not todos:
+        return ""
+
+    lines = ["Open checklist"]
+    for todo in todos:
+        lines.append(format_todo_line(todo, include_owner=False))
+    return "\n".join(lines)
+
+
+def build_todo_summary_line(submission: dict) -> str:
+    open_total = count_open_ticket_todos(submission)
+    if open_total == 0:
+        return "Checklist: clear"
+    return (
+        f"Checklist: {open_total} open "
+        f"({count_open_ticket_todos(submission, 'admin')} admin, {count_open_ticket_todos(submission, 'user')} user)"
+    )
+
+
+def build_todo_reminder_message(ticket_id: int, submission: dict, todo: dict, owner: str) -> str:
+    header = "Admin reminder" if owner == "admin" else "Checklist reminder"
+    lines = [
+        f"{header} for ticket #{ticket_id}",
+        "",
+        format_todo_line(todo, include_owner=False),
+    ]
+    user_todos = open_ticket_todos(submission, owner if owner == "user" else None)
+    if owner == "user" and user_todos:
+        lines.extend(["", "Current open checklist"])
+        for item in user_todos:
+            lines.append(format_todo_line(item, include_owner=False))
+    elif owner == "admin":
+        admin_todos = open_ticket_todos(submission, "admin")
+        if admin_todos:
+            lines.extend(["", "Open admin checklist"])
+            for item in admin_todos:
+                lines.append(format_todo_line(item, include_owner=False))
+    return "\n".join(lines)
+
+
+def due_ticket_todos(submission: dict, now: datetime | None = None) -> list[dict]:
+    reference_now = now or datetime.now(timezone.utc)
+    due: list[dict] = []
+    for todo in open_ticket_todos(submission):
+        if ticket_is_ended(submission) and todo.get("owner") == "user":
+            continue
+        remind_at = parse_iso_datetime(todo.get("remind_at"))
+        if remind_at is None or remind_at > reference_now:
+            continue
+        if parse_iso_datetime(todo.get("reminder_sent_at")) is not None:
+            continue
+        due.append(todo)
+    return due
+
+
+def due_ticket_todo_count(submission: dict, owner: str | None = None) -> int:
+    due = due_ticket_todos(submission)
+    if owner is not None:
+        due = [todo for todo in due if todo.get("owner") == owner]
+    return len(due)
+
+
 def stale_ticket_auto_end_note(submission: dict) -> str:
     if ticket_is_ended(submission):
         return ""
@@ -1615,6 +2310,8 @@ def classify_queue_state(submission: dict) -> str:
     request = normalize_payload(submission.get("request", {}))
     if ticket_is_ended(submission):
         return "done_closed"
+    if has_open_user_todos(submission):
+        return "waiting_user"
     if submission.get("status") == "answered_public":
         return "done_public"
 
@@ -1637,6 +2334,181 @@ def classify_queue_state(submission: dict) -> str:
     return "waiting_user"
 
 
+def admin_queue_state_label(state: str) -> str:
+    labels = {
+        "queue": "Waiting on you",
+        "awaiting_private": "Waiting on you (private)",
+        "awaiting_public": "Waiting on you (public)",
+        "waiting_user": "Waiting on user",
+        "done_public": "Answered publicly",
+        "done_closed": "Ended",
+        "all": "All tickets",
+    }
+    return labels.get(state, state.replace("_", " ").title())
+
+
+def admin_queue_state_short_label(state: str) -> str:
+    labels = {
+        "awaiting_private": "You/private",
+        "awaiting_public": "You/public",
+        "waiting_user": "User",
+        "done_public": "Public done",
+        "done_closed": "Ended",
+    }
+    return labels.get(state, state.replace("_", " ").title())
+
+
+def latest_activity_value(submission: dict) -> str | None:
+    latest = latest_response(submission)
+    if latest is not None and latest.get("created_at"):
+        return latest.get("created_at")
+    return submission.get("updated_at") or submission.get("created_at")
+
+
+def recent_activity_sort_key(submission: dict) -> tuple[datetime, int]:
+    latest_at = parse_iso_datetime(latest_activity_value(submission)) or datetime.min.replace(tzinfo=timezone.utc)
+    return latest_at, int(submission.get("id", 0))
+
+
+def normalize_ticket_list_scope(value: str) -> str | None:
+    return TICKET_LIST_SCOPE_ALIASES.get((value or "").strip().lower())
+
+
+def build_ticket_list_usage() -> str:
+    return (
+        "Usage: /tickets [queue|private|public|waiting_user|ended|all] [limit]\n"
+        "Limit is capped at 25.\n"
+        "Examples:\n"
+        "/tickets\n"
+        "/tickets 20\n"
+        "/tickets waiting_user 20\n"
+        "/tickets ended 20"
+    )
+
+
+def parse_ticket_list_args(args: list[str]) -> tuple[str | None, int | None]:
+    if len(args) > 2:
+        return None, None
+
+    scope = "queue"
+    limit = DEFAULT_ADMIN_TICKET_LIST_LIMIT
+
+    if not args:
+        return scope, limit
+
+    first = (args[0] or "").strip()
+    if first.isdigit():
+        return scope, max(1, min(int(first), MAX_ADMIN_TICKET_LIST_LIMIT))
+
+    scope = normalize_ticket_list_scope(first)
+    if scope is None:
+        return None, None
+
+    if len(args) == 2:
+        second = (args[1] or "").strip()
+        if not second.isdigit():
+            return None, None
+        limit = max(1, min(int(second), MAX_ADMIN_TICKET_LIST_LIMIT))
+
+    return scope, limit
+
+
+def select_ticket_list_submissions(submissions: list[dict], scope: str) -> list[dict]:
+    if scope == "queue":
+        selected = [
+            submission
+            for submission in submissions
+            if classify_queue_state(submission) in {"awaiting_private", "awaiting_public"}
+        ]
+        return sorted(selected, key=queue_priority_key)
+
+    if scope == "all":
+        return sorted(submissions, key=recent_activity_sort_key, reverse=True)
+
+    selected = [
+        submission
+        for submission in submissions
+        if classify_queue_state(submission) == scope
+    ]
+    if scope in {"awaiting_private", "awaiting_public"}:
+        return sorted(selected, key=queue_priority_key)
+    return sorted(selected, key=recent_activity_sort_key, reverse=True)
+
+
+def build_ticket_lookup_message(record: dict) -> str:
+    ticket_id = int(record.get("id", 0))
+    latest_activity = format_age_short(latest_activity_value(record))
+    latest_activity_text = "unknown" if latest_activity == "unknown" else f"{latest_activity} ago"
+    response_count = len(record.get("responses", []))
+    queue_state = admin_queue_state_label(classify_queue_state(record))
+
+    return (
+        "Ticket lookup\n"
+        f"Ticket: #{ticket_id}\n"
+        f"Queue state: {queue_state}\n"
+        f"Responses: {response_count}\n"
+        f"{build_todo_summary_line(record)}\n"
+        f"Latest activity: {latest_activity_text}\n\n"
+        f"{format_submission(record)}\n\n"
+        f"{build_ticket_todos_section(record)}\n\n"
+        f"{build_ticket_notes_section(record, MAX_TICKET_NOTES_PREVIEW)}"
+    )
+
+
+def build_ticket_list_message(submissions: list[dict], scope: str, limit: int) -> tuple[str, list[dict]]:
+    if not submissions:
+        return "No requests have been submitted yet.", []
+
+    selected = select_ticket_list_submissions(submissions, scope)
+    scope_label = admin_queue_state_label(scope)
+    if not selected:
+        return f"Ticket list: {scope_label}\n\nNo tickets match that filter right now.", []
+
+    shown = selected[:limit]
+    lines = [
+        f"Ticket list: {scope_label}",
+        "",
+        f"Showing {len(shown)} of {len(selected)}",
+        "",
+    ]
+
+    for submission in shown:
+        request = normalize_payload(submission.get("request", {}))
+        quality = assess_request_quality(request)
+        state = classify_queue_state(submission)
+        latest_activity = format_age_short(latest_activity_value(submission))
+        latest_activity_text = "unknown" if latest_activity == "unknown" else f"last {latest_activity}"
+        lines.append(
+            f"#{submission['id']} | {admin_queue_state_short_label(state)} | {quality['grade']} | "
+            f"{short_request_kind_label(request.get('request_kind', 'mentorship'))} | {request['urgency']} | "
+            f"{trim_text(request['track'], 16)} | "
+            f"{trim_text(request['question'], 56)} | {latest_activity_text} | {count_open_ticket_todos(submission)} tasks"
+        )
+
+    lines.extend(
+        [
+            "",
+            "Fast lookup",
+            "/ticket <ticket>",
+            "/tickets",
+            "/tickets waiting_user 20",
+            "/tickets ended 20",
+            "/todos <ticket>",
+        ]
+    )
+    return "\n".join(lines), shown
+
+
+def build_ticket_list_markup(submissions: list[dict]) -> InlineKeyboardMarkup | None:
+    buttons = [
+        build_copy_button(f"#{int(submission.get('id', 0))}", f"/ticket {int(submission.get('id', 0))}")
+        for submission in submissions[:12]
+    ]
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(chunk_items(buttons, 4))
+
+
 def queue_priority_key(submission: dict) -> tuple[int, int, datetime, int]:
     request = normalize_payload(submission.get("request", {}))
     urgency_rank = {"High": 0, "Normal": 1, "Low": 2}.get(request.get("urgency", "Normal"), 1)
@@ -1649,7 +2521,7 @@ def build_dashboard_message(submissions: list[dict]) -> str:
     availability_text, _ = expand_saved_tags(MENTOR_AVAILABILITY_TEXT)
     if not submissions:
         return (
-            "Mentor Dashboard\n\n"
+            "Admin Dashboard\n\n"
             "No tickets yet.\n\n"
             f"Response windows\n{availability_text}"
         )
@@ -1660,11 +2532,19 @@ def build_dashboard_message(submissions: list[dict]) -> str:
     ended = 0
     high_priority = 0
     answer_ready = 0
+    admin_todos_open = 0
+    user_todos_open = 0
+    due_admin_reminders = 0
+    due_user_reminders = 0
 
     for submission in submissions:
         state = classify_queue_state(submission)
         request = normalize_payload(submission.get("request", {}))
         quality = assess_request_quality(request)
+        admin_todos_open += count_open_ticket_todos(submission, "admin")
+        user_todos_open += count_open_ticket_todos(submission, "user")
+        due_admin_reminders += due_ticket_todo_count(submission, "admin")
+        due_user_reminders += due_ticket_todo_count(submission, "user")
         if state == "awaiting_private":
             waiting_private.append(submission)
             if request.get("urgency") == "High":
@@ -1689,14 +2569,15 @@ def build_dashboard_message(submissions: list[dict]) -> str:
         quality = assess_request_quality(request)
         preview_lines.append(
             f"#{submission['id']} | {quality['grade']} | {answer_mode_policy_short(request.get('answer_mode', 'private'))} | "
-            f"{request['urgency']} | {trim_text(request['track'], 20)} | "
+            f"{short_request_kind_label(request.get('request_kind', 'mentorship'))} | {request['urgency']} | "
+            f"{trim_text(request['track'], 18)} | "
             f"{trim_text(request['question'], 52)} | {format_age_short(submission.get('created_at'))}"
         )
 
     preview_text = "\n".join(preview_lines) if preview_lines else "No tickets currently waiting on you."
 
     return (
-        "Mentor Dashboard\n\n"
+        "Admin Dashboard\n\n"
         f"Total tickets: {len(submissions)}\n"
         f"Waiting on you: {len(waiting_on_you)}\n"
         f"Private queue: {len(waiting_private)}\n"
@@ -1705,9 +2586,17 @@ def build_dashboard_message(submissions: list[dict]) -> str:
         f"Ended tickets: {ended}\n"
         f"High priority waiting: {high_priority}\n\n"
         f"Answer-ready now: {answer_ready}\n\n"
+        f"Admin checklist open: {admin_todos_open}\n"
+        f"User checklist open: {user_todos_open}\n"
+        f"Due reminders now: {due_admin_reminders + due_user_reminders}\n\n"
         f"Response windows\n{availability_text}\n\n"
         f"Next tickets\n{preview_text}\n\n"
         "Fast actions\n"
+        "/ticket <ticket>\n"
+        "/tickets queue 20\n"
+        "/tickets waiting_user 20\n"
+        "/todos <ticket>\n"
+        "/todo <ticket> user <task>\n"
         "/templates\n"
         "/tags\n"
         "/quickreply <ticket> queue\n"
@@ -1786,8 +2675,11 @@ def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
     request = normalize_payload(record.get("request", {}))
     ticket_id = int(record.get("id", 0))
     buttons = [
+        build_copy_button("Copy /ticket", f"/ticket {ticket_id}"),
         build_copy_button("Copy /reply", f"/reply {ticket_id} "),
         build_copy_button("Copy /status", f"/status {ticket_id}"),
+        build_copy_button("Copy /notes", f"/notes {ticket_id}"),
+        build_copy_button("Copy /todos", f"/todos {ticket_id}"),
     ]
 
     suggested_template = suggest_quick_reply_template(request)
@@ -1804,6 +2696,9 @@ def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
     if booking_enabled():
         buttons.append(build_copy_button("Copy /sendmeeting", f"/sendmeeting {ticket_id}"))
 
+    buttons.append(build_copy_button("Copy /note", f"/note {ticket_id} "))
+    buttons.append(build_copy_button("Copy /todo user", f"/todo {ticket_id} user "))
+    buttons.append(build_copy_button("Copy /todo admin", f"/todo {ticket_id} admin "))
     buttons.append(build_copy_button("Copy /endticket", f"/endticket {ticket_id}"))
 
     return InlineKeyboardMarkup(chunk_items(buttons, 2))
@@ -1891,6 +2786,7 @@ def parse_ticket_id(value: str) -> int | None:
 
 def normalize_payload(payload: dict) -> dict:
     return {
+        "request_kind": normalize_request_kind(payload.get("request_kind", "")),
         "track": clean_text(payload.get("track", ""), "General"),
         "level": clean_text(payload.get("level", ""), "Not provided"),
         "goal": clean_text(payload.get("goal", ""), "Not provided"),
@@ -1927,6 +2823,8 @@ def build_submission_record(user, payload: dict, source: str) -> dict:
             "user_root_message_id": None,
         },
         "discussion": {"chat_id": None, "message_id": None},
+        "notes": [],
+        "todos": [],
         "responses": [],
     }
 
@@ -1941,7 +2839,7 @@ def format_submission(record: dict) -> str:
     if contact_visibility == "hidden":
         contact_lines = (
             "Private contact\n"
-            "The requester chose to hide their display name, username, and Telegram ID in the mentor view.\n"
+            "The requester chose to hide their display name, username, and Telegram ID in the admin view.\n"
             "The bot still keeps the delivery route privately so replies can be sent."
         )
     else:
@@ -1955,6 +2853,11 @@ def format_submission(record: dict) -> str:
 
     action_lines = [
         "Admin actions",
+        f"/ticket {ticket_id}",
+        f"/todos {ticket_id}",
+        f"/todo {ticket_id} user follow_up_task",
+        f"/todo {ticket_id} admin internal_follow_up",
+        f"/note {ticket_id} internal context",
         f"/reply {ticket_id} your private answer",
         f"/endticket {ticket_id}",
     ]
@@ -1971,7 +2874,7 @@ def format_submission(record: dict) -> str:
     action_text = "\n".join(action_lines)
 
     return (
-        f"Mentorship Ticket #{ticket_id}\n\n"
+        f"Request Ticket #{ticket_id}\n\n"
         f"Submitted: {record.get('display_time', 'Unknown')}\n"
         f"Source: {format_source(record.get('source', 'guided_flow'))}\n"
         f"Status: {format_status(record.get('status', 'open'))}\n\n"
@@ -1979,11 +2882,12 @@ def format_submission(record: dict) -> str:
         f"Reply policy\n{answer_mode_policy_text(request['answer_mode'])}\n\n"
         f"{contact_lines}\n\n"
         f"Request\n"
+        f"Request type: {format_request_kind(request['request_kind'])}\n"
         f"Topic: {request['track']}\n"
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
         f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
-        f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
+        f"Contact in admin view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal: {request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
         f"Question:\n{request['question']}\n\n"
@@ -2000,7 +2904,8 @@ def format_discussion_ticket(record: dict) -> str:
     public_request = record.get("public_request") or build_public_prompt(request)
 
     return (
-        f"Anonymous Mentorship Ticket #{record['id']}\n\n"
+        f"Anonymous Request Ticket #{record['id']}\n\n"
+        f"Request type: {format_request_kind(request['request_kind'])}\n"
         f"Topic: {request['track']}\n"
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n\n"
@@ -2014,7 +2919,8 @@ def build_summary(payload: dict) -> str:
     request = normalize_payload(payload)
     quality = assess_request_quality(request)
     return (
-        "Review your mentorship request:\n\n"
+        "Review your request:\n\n"
+        f"Request type: {format_request_kind(request['request_kind'])}\n"
         f"Topic: {request['track']}\n"
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
@@ -2022,7 +2928,7 @@ def build_summary(payload: dict) -> str:
         f"Reply policy: {answer_mode_policy_text(request['answer_mode'])}\n\n"
         f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
         f"Best improvement: {quality['improvement']}\n\n"
-        f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
+        f"Contact in admin view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal:\n{request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
         f"Question:\n{request['question']}\n\n"
@@ -2039,11 +2945,12 @@ def build_user_status(record: dict) -> str:
         f"Ticket #{ticket_id}",
         f"Status: {format_status(record.get('status', 'open'))}",
         f"Submitted: {record.get('display_time', 'Unknown')}",
+        f"Request type: {format_request_kind(request.get('request_kind', 'mentorship'))}",
         f"Topic: {request.get('track', 'General')}",
         f"Requested reply mode: {format_answer_mode(request.get('answer_mode', 'private'))}",
         f"Reply policy: {answer_mode_policy_text(request.get('answer_mode', 'private'))}",
         f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})",
-        f"Contact in mentor view: {format_contact_visibility(request.get('contact_visibility', 'shown'))}",
+        f"Contact in admin view: {format_contact_visibility(request.get('contact_visibility', 'shown'))}",
     ]
 
     if allows_public_reply(request.get("answer_mode", "private")) and private_thread_enabled(record):
@@ -2068,6 +2975,9 @@ def build_user_status(record: dict) -> str:
     discussion = record.get("discussion", {})
     if discussion.get("message_id") and record.get("status") == "open" and not ticket_has_public_answer(record):
         lines.append("Your anonymous public ticket is queued in the discussion group.")
+    user_todos_section = build_user_todos_section(record)
+    if user_todos_section:
+        lines.extend(["", user_todos_section])
     if ticket_is_ended(record):
         lines.append("This ticket has been ended by the mentor.")
     elif public_followup_enabled(record):
@@ -2153,6 +3063,84 @@ async def send_private_ticket_message(
     return True, ""
 
 
+def build_user_todo_update_message(ticket_id: int, submission: dict, todo: dict, reason: str) -> str:
+    title = "Checklist update" if reason == "created" else "Checklist reminder"
+    lines = [
+        f"{title} for ticket #{ticket_id}",
+        "",
+        format_todo_line(todo, include_owner=False),
+    ]
+
+    user_todos = open_ticket_todos(submission, "user")
+    if user_todos:
+        lines.extend(["", "Current open checklist"])
+        for item in user_todos:
+            lines.append(format_todo_line(item, include_owner=False))
+
+    lines.append("")
+    if private_thread_enabled(submission) and not ticket_is_ended(submission):
+        lines.append("Reply to the existing private ticket thread in the bot when you have an update.")
+    elif public_followup_enabled(submission):
+        lines.append(f"When you have an update, continue with {public_followup_command(ticket_id)}.")
+    else:
+        lines.append(f"Use /status {ticket_id} any time to review the current checklist.")
+    return "\n".join(lines)
+
+
+async def notify_user_todo_update(
+    context: ContextTypes.DEFAULT_TYPE,
+    submission: dict,
+    ticket_id: int,
+    todo: dict,
+    reason: str,
+) -> None:
+    user_id = submission.get("user", {}).get("id")
+    if user_id is None:
+        return
+
+    reply_target = get_latest_private_thread_message_id(submission, "user") if private_thread_enabled(submission) else None
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=build_user_todo_update_message(ticket_id, submission, todo, reason),
+            reply_to_message_id=reply_target,
+            link_preview_options=NO_PREVIEW,
+        )
+    except TelegramError:
+        logger.exception("Failed to notify user about checklist update for ticket %s", ticket_id)
+
+
+async def send_due_todo_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    admin_id = context.application.bot_data.get("admin_id")
+    now = datetime.now(timezone.utc)
+
+    for submission in read_submissions():
+        ticket_id = int(submission.get("id", 0))
+        for todo in due_ticket_todos(submission, now):
+            target_chat_id = admin_id if todo.get("owner") == "admin" else submission.get("user", {}).get("id")
+            if target_chat_id is None:
+                continue
+
+            reply_target = None
+            if todo.get("owner") == "admin":
+                reply_target = get_latest_private_thread_message_id(submission, "admin")
+            elif private_thread_enabled(submission):
+                reply_target = get_latest_private_thread_message_id(submission, "user")
+
+            try:
+                await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=build_todo_reminder_message(ticket_id, submission, todo, todo.get("owner", "user")),
+                    reply_to_message_id=reply_target,
+                    link_preview_options=NO_PREVIEW,
+                )
+            except TelegramError:
+                logger.exception("Failed to send checklist reminder for ticket %s todo %s", ticket_id, todo.get("id"))
+                continue
+
+            mark_ticket_todo_reminder_sent(ticket_id, int(todo.get("id", 0)), now.isoformat())
+
+
 def resolve_quick_reply_target(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2213,6 +3201,130 @@ def resolve_admin_ticket_target(
             return int(submission["id"]), submission, 0
 
     return None, None, 0
+
+
+def add_ticket_note(ticket_id: int, text: str) -> tuple[dict | None, dict | None]:
+    note_text = clean_text(text, "")
+    if not note_text:
+        return None, None
+
+    created_note: dict | None = None
+
+    def mutate(submission: dict, updated_at: str) -> bool:
+        nonlocal created_note
+        notes = ticket_notes(submission)
+        note_record = {
+            "id": next_ticket_item_id(notes),
+            "text": note_text,
+            "created_at": updated_at,
+            "author": "admin",
+        }
+        notes.append(note_record)
+        submission["notes"] = notes
+        created_note = note_record
+        return True
+
+    submission = mutate_submission(ticket_id, mutate)
+    return submission, created_note
+
+
+def add_ticket_todo(ticket_id: int, owner: str, text: str) -> tuple[dict | None, dict | None]:
+    todo_text = clean_text(text, "")
+    if not todo_text:
+        return None, None
+
+    created_todo: dict | None = None
+
+    def mutate(submission: dict, updated_at: str) -> bool:
+        nonlocal created_todo
+        todos = ticket_todos(submission)
+        todo_record = {
+            "id": next_ticket_item_id(todos),
+            "owner": owner,
+            "text": todo_text,
+            "status": "open",
+            "created_at": updated_at,
+            "updated_at": updated_at,
+            "done_at": "",
+            "remind_at": "",
+            "reminder_sent_at": "",
+        }
+        todos.append(todo_record)
+        submission["todos"] = todos
+        created_todo = todo_record
+        return True
+
+    submission = mutate_submission(ticket_id, mutate)
+    return submission, created_todo
+
+
+def set_ticket_todo_status(ticket_id: int, todo_id: int, done: bool) -> tuple[dict | None, dict | None]:
+    updated_todo: dict | None = None
+
+    def mutate(submission: dict, updated_at: str) -> bool:
+        nonlocal updated_todo
+        todos = ticket_todos(submission)
+        changed = False
+        for todo in todos:
+            if int(todo.get("id", 0)) != todo_id:
+                continue
+            todo["status"] = "done" if done else "open"
+            todo["updated_at"] = updated_at
+            todo["done_at"] = updated_at if done else ""
+            todo["reminder_sent_at"] = ""
+            updated_todo = dict(todo)
+            changed = True
+            break
+        if changed:
+            submission["todos"] = todos
+        return changed
+
+    submission = mutate_submission(ticket_id, mutate)
+    return submission, updated_todo
+
+
+def set_ticket_todo_reminder(ticket_id: int, todo_id: int, remind_at: str) -> tuple[dict | None, dict | None]:
+    updated_todo: dict | None = None
+
+    def mutate(submission: dict, updated_at: str) -> bool:
+        nonlocal updated_todo
+        todos = ticket_todos(submission)
+        changed = False
+        for todo in todos:
+            if int(todo.get("id", 0)) != todo_id:
+                continue
+            todo["remind_at"] = remind_at
+            todo["reminder_sent_at"] = ""
+            todo["updated_at"] = updated_at
+            updated_todo = dict(todo)
+            changed = True
+            break
+        if changed:
+            submission["todos"] = todos
+        return changed
+
+    submission = mutate_submission(ticket_id, mutate)
+    return submission, updated_todo
+
+
+def mark_ticket_todo_reminder_sent(ticket_id: int, todo_id: int, sent_at: str) -> dict | None:
+    def mutate(submission: dict, updated_at: str) -> bool:
+        todos = ticket_todos(submission)
+        changed = False
+        for todo in todos:
+            if int(todo.get("id", 0)) != todo_id:
+                continue
+            if todo.get("status") == "done":
+                break
+            todo["reminder_sent_at"] = sent_at
+            todo["updated_at"] = updated_at
+            changed = True
+            break
+        if changed:
+            submission["todos"] = todos
+        return changed
+
+    return mutate_submission(ticket_id, mutate)
 
 
 async def post_public_answer(
@@ -2285,7 +3397,7 @@ async def deliver_submission(
             link_preview_options=NO_PREVIEW,
         )
     except TelegramError:
-        logger.exception("Failed to forward mentorship request")
+        logger.exception("Failed to forward request")
         await update.message.reply_text(
             "I could not deliver your request right now. Please try again in a moment.",
             reply_markup=build_keyboard(MAIN_MENU),
@@ -2324,13 +3436,14 @@ async def deliver_submission(
         )
     user_confirmation_message = await update.message.reply_text(
         append_user_cta(
-            f"Your mentorship request has been sent.\n"
+            f"Your request has been sent.\n"
             f"Ticket: #{record['id']}\n"
+            f"Request type: {format_request_kind(record['request']['request_kind'])}\n"
             f"Requested reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
             f"Reply policy: {answer_mode_policy_text(record['request']['answer_mode'])}\n"
             f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
             f"Best improvement: {quality['improvement']}\n"
-            f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
+            f"Contact in admin view: {format_contact_visibility(record['request']['contact_visibility'])}"
             f"{public_note}\n"
             "If you do not want channel news mirrored here, use /muteupdates. Use /resumeupdates any time to turn them back on.",
             record["id"],
@@ -2480,7 +3593,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if context.application.bot_data.get("admin_id") is None:
         await update.message.reply_text(
-            "This mentorship bot is almost ready.\n"
+            "This request bot is almost ready.\n"
             "If you are the owner, send /claimadmin once from your Telegram account.",
             reply_markup=ReplyKeyboardRemove(),
         )
@@ -2497,15 +3610,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_with_optional_logo(
         update.message,
         append_user_cta(
-            "Welcome to the mentorship bot.\n"
-            f"Your request is delivered to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
-            "This is a free service designed to stay practical, concise, and sustainable.\n\n"
-            "You can ask about research direction, technical guidance, project review, academic growth, career questions, startup ideas, or your own custom topic.\n\n"
-            f"{GUIDED_REQUEST_LABEL} explains each step and helps you shape a stronger request.\n"
+            "Welcome to the request bot.\n"
+            f"Your request is routed to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
+            "This service is designed to stay practical, concise, and sustainable.\n\n"
+            "You can use it for mentorship, technical services, collaboration discussions, speaking invitations, or a custom request.\n\n"
+            f"{GUIDED_REQUEST_LABEL} classifies the request first, then helps you shape a stronger submission.\n"
             f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n"
             f"{BOOK_MEETING_LABEL} opens the Calendly link when a live session is the better use of time.\n\n"
+            f"{SERVICES_LABEL} opens the broader services page.\n"
+            f"{CONTACT_LABEL} routes direct collaboration or service requests.\n"
+            f"{WEBSITE_LABEL} opens the broader public site.\n"
+            "Use /profile for the public background snapshot.\n\n"
             "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
-            "Before submitting, you can choose whether those details stay visible in the mentor view.\n\n"
+            "Before submitting, you can choose whether those details stay visible in the admin view.\n\n"
             f"{PRIVATE_REPLY_LABEL} stays inside the bot and cannot be turned into a public answer later.\n"
             f"{PUBLIC_ANSWER_LABEL} keeps your identity private and may still be answered privately if that is more useful.\n\n"
             "If you are not already in the public channel, important channel updates can also arrive here.\n"
@@ -2523,7 +3640,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(
             "/adminstatus shows the current admin.\n"
             "/storagestatus shows whether the queue is on persistent storage.\n"
-            "/dashboard shows the current mentor queue and reply slots.\n"
+            "/dashboard shows the current admin queue, checklist load, and reminder load.\n"
+            "/ticket <ticket> opens one ticket by ID, or by replying to an admin-side ticket message.\n"
+            "/tickets [queue|private|public|waiting_user|ended|all] [limit] lists compact slices of the queue.\n"
+            "/note <ticket> <text> saves internal context on a ticket.\n"
+            "/notes <ticket> shows the stored internal notes.\n"
+            "/todo <ticket> <admin|user> <task> adds a checklist item.\n"
+            "/todos <ticket> shows the ticket checklist.\n"
+            "/tododone <ticket> <todo_id> marks a checklist item done.\n"
+            "/todoundo <ticket> <todo_id> reopens a checklist item.\n"
+            "/todoremind <ticket> <todo_id> <30m|2h|3d|off> sets or clears a reminder.\n"
             "New tickets are graded for readiness so specific cases rise to the top faster.\n"
             "/templates lists the ready private reply templates.\n"
             "Templates and tags use Telegram copy buttons for faster reuse.\n"
@@ -2537,12 +3663,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/channelstatus shows the public answer channel.\n"
             "Normal posts from the public channel are mirrored to bot users who are not channel members.\n"
             "/availability shows the public response-window message.\n"
+            "/contact, /website, /profile, and /services stay available as user-facing navigation shortcuts.\n"
             "/meetingstatus shows the current Calendly setup.\n"
             f"{PRIVATE_REPLY_LABEL} tickets are locked private and cannot be answered publicly.\n"
             f"{PUBLIC_ANSWER_LABEL} tickets may still be answered privately when that is more useful.\n"
             "After the latest private reply, a private ticket ends automatically after 1 day without a reply.\n"
             "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n"
-            "/stats shows mentorship request counts.\n"
+            "/stats shows request counts.\n"
             "Reply to a private ticket message to continue the private conversation through the bot.\n"
             "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
             "/sendmeeting <ticket> [note] sends a ticket-specific meeting invite.\n"
@@ -2557,12 +3684,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await update.message.reply_text(
         append_user_cta(
-            "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
-            f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
+            "This bot handles mentorship, technical service, research collaboration, speaking or workshop requests, and related custom questions.\n\n"
+            f"{GUIDED_REQUEST_LABEL} asks what kind of request this is first, then captures topic, stage, goal, blocker, and urgency.\n"
             f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n"
             f"{BOOK_MEETING_LABEL} opens the Calendly booking link if a live session is the fastest route.\n"
+            f"{SERVICES_LABEL} or /services opens the website services page for broader service context.\n"
+            f"{CONTACT_LABEL} or /contact opens the direct contact routes.\n"
+            f"{WEBSITE_LABEL} or /website opens the public website sections.\n"
+            "/profile opens the public profile snapshot and key public links.\n"
             "More specific requests are graded as more answer-ready and usually get faster, cleaner replies.\n\n"
-            "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
+            "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the admin or hide them in the admin view.\n\n"
             f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
             f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
             "If your ticket is being handled privately in the bot, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
@@ -2600,9 +3731,9 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await sync_commands(context.application)
     await update.message.reply_text(
         "Admin saved successfully.\n"
-        "The mentorship bot is ready to receive requests.\n"
+        "The request bot is ready to receive tickets.\n"
         "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.\n"
-        "Use /storagestatus to confirm queue persistence, /dashboard to keep the queue under control, /templates for fast replies, /tags for saved shortcuts, and /meetingstatus to confirm Calendly booking.",
+        "Use /storagestatus to confirm queue persistence, /dashboard to watch the queue and follow-up load, /ticket and /tickets for lookup, /todo and /note for execution tracking, /templates for fast replies, /tags for saved shortcuts, and /meetingstatus to confirm Calendly booking.",
         reply_markup=build_keyboard(ADMIN_MENU),
     )
 
@@ -2837,13 +3968,14 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     submissions = read_submissions()
     if not submissions:
-        await update.message.reply_text("No mentorship requests have been submitted yet.")
+        await update.message.reply_text("No requests have been submitted yet.")
         return
 
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(days=7)
     recent_count = 0
     track_counter: Counter[str] = Counter()
+    request_kind_counter: Counter[str] = Counter()
     status_counter: Counter[str] = Counter()
     answer_mode_counter: Counter[str] = Counter()
 
@@ -2851,6 +3983,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         request = normalize_payload(submission.get("request", {}))
         track = request.get("track", "Unknown")
         track_counter[track] += 1
+        request_kind_counter[format_request_kind(request.get("request_kind", "mentorship"))] += 1
         status_counter[submission.get("status", "open")] += 1
         answer_mode_counter[request.get("answer_mode", "private")] += 1
 
@@ -2866,6 +3999,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     top_tracks = "\n".join(
         f"- {track}: {count}" for track, count in track_counter.most_common(5)
     )
+    request_type_lines = "\n".join(
+        f"- {request_kind}: {count}" for request_kind, count in request_kind_counter.most_common()
+    )
 
     await update.message.reply_text(
         f"Total requests: {len(submissions)}\n"
@@ -2875,6 +4011,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Answered publicly: {status_counter.get('answered_public', 0)}\n\n"
         f"Private reply preference: {answer_mode_counter.get('private', 0)}\n"
         f"Public answer preference: {answer_mode_counter.get('public', 0)}\n\n"
+        f"Request types:\n{request_type_lines}\n\n"
         f"Top topics:\n{top_tracks}",
         link_preview_options=NO_PREVIEW,
     )
@@ -2891,6 +4028,341 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(
         build_dashboard_message(read_submissions()),
         reply_markup=build_keyboard(ADMIN_MENU),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def ticket_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, _ = resolve_admin_ticket_target(update, context)
+    if ticket_id is None:
+        await update.message.reply_text(
+            "Usage: /ticket <ticket_number>\n"
+            "You can also reply to an admin-side ticket message with /ticket."
+        )
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    await update.message.reply_text(
+        build_ticket_lookup_message(submission),
+        reply_markup=build_ticket_actions_markup(submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def tickets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    scope, limit = parse_ticket_list_args(context.args)
+    if scope is None or limit is None:
+        await update.message.reply_text(build_ticket_list_usage())
+        return
+
+    message_text, shown = build_ticket_list_message(read_submissions(), scope, limit)
+    await update.message.reply_text(
+        message_text,
+        reply_markup=build_ticket_list_markup(shown),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None:
+        await update.message.reply_text(build_notes_usage())
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    note_text = " ".join(context.args[args_offset:]).strip()
+    if not note_text:
+        await update.message.reply_text(build_notes_usage())
+        return
+
+    extra_tags = build_ticket_tags(ticket_id, submission)
+    note_text, missing_tags = expand_saved_tags(note_text, extra_tags)
+    if missing_tags:
+        await update.message.reply_text(
+            build_unknown_tags_message(missing_tags),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
+        return
+
+    updated_submission, created_note = add_ticket_note(ticket_id, note_text)
+    if updated_submission is None or created_note is None:
+        await update.message.reply_text("I could not save that note.")
+        return
+
+    await update.message.reply_text(
+        f"Saved note #{created_note['id']} for ticket #{ticket_id}.\n\n{build_ticket_notes_section(updated_submission, MAX_TICKET_NOTES_PREVIEW)}",
+        reply_markup=build_ticket_actions_markup(updated_submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, _ = resolve_admin_ticket_target(update, context)
+    if ticket_id is None:
+        await update.message.reply_text("Usage: /notes <ticket_number>\nYou can also reply to an admin-side ticket message with /notes.")
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    await update.message.reply_text(
+        f"Ticket #{ticket_id}\n\n{build_ticket_notes_section(submission)}",
+        reply_markup=build_ticket_actions_markup(submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def todo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None:
+        await update.message.reply_text(build_todo_usage())
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    if len(context.args) <= args_offset:
+        await update.message.reply_text(build_todo_usage())
+        return
+
+    owner = normalize_ticket_owner(context.args[args_offset])
+    if owner is None:
+        await update.message.reply_text(build_todo_usage())
+        return
+
+    todo_text = " ".join(context.args[args_offset + 1 :]).strip()
+    if not todo_text:
+        await update.message.reply_text(build_todo_usage())
+        return
+
+    if owner == "user" and ticket_is_ended(submission):
+        await update.message.reply_text("User checklist items cannot be added after a ticket is ended.")
+        return
+
+    extra_tags = build_ticket_tags(ticket_id, submission)
+    todo_text, missing_tags = expand_saved_tags(todo_text, extra_tags)
+    if missing_tags:
+        await update.message.reply_text(
+            build_unknown_tags_message(missing_tags),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
+        return
+
+    updated_submission, created_todo = add_ticket_todo(ticket_id, owner, todo_text)
+    if updated_submission is None or created_todo is None:
+        await update.message.reply_text("I could not save that checklist item.")
+        return
+
+    if owner == "user" and not ticket_is_ended(updated_submission):
+        await notify_user_todo_update(context, updated_submission, ticket_id, created_todo, "created")
+
+    await update.message.reply_text(
+        f"Added checklist item #{created_todo['id']} for ticket #{ticket_id}.\n"
+        f"Owner: {todo_owner_label(owner)}\n"
+        f"{build_todo_summary_line(updated_submission)}\n\n"
+        f"{build_ticket_todos_section(updated_submission)}",
+        reply_markup=build_ticket_actions_markup(updated_submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def todos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, _ = resolve_admin_ticket_target(update, context)
+    if ticket_id is None:
+        await update.message.reply_text("Usage: /todos <ticket_number>\nYou can also reply to an admin-side ticket message with /todos.")
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    await update.message.reply_text(
+        f"Ticket #{ticket_id}\n\n{build_ticket_todos_section(submission)}",
+        reply_markup=build_ticket_actions_markup(submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def tododone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None or len(context.args) <= args_offset:
+        await update.message.reply_text(
+            "Usage: /tododone <ticket_number> <todo_id>\n"
+            "Or reply to an admin-side ticket message with /tododone <todo_id>."
+        )
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    todo_id = parse_numeric_id(context.args[args_offset])
+    if todo_id is None:
+        await update.message.reply_text("Checklist item IDs must be numeric.")
+        return
+
+    existing_todo = find_ticket_todo(submission, todo_id)
+    if existing_todo is None:
+        await update.message.reply_text(f"Checklist item #{todo_id} was not found on ticket #{ticket_id}.")
+        return
+    if existing_todo.get("status") == "done":
+        await update.message.reply_text(f"Checklist item #{todo_id} is already done.")
+        return
+
+    updated_submission, updated_todo = set_ticket_todo_status(ticket_id, todo_id, done=True)
+    if updated_submission is None or updated_todo is None:
+        await update.message.reply_text("I could not update that checklist item.")
+        return
+
+    await update.message.reply_text(
+        f"Checklist item #{todo_id} marked done for ticket #{ticket_id}.\n\n{build_ticket_todos_section(updated_submission)}",
+        reply_markup=build_ticket_actions_markup(updated_submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def todoundo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None or len(context.args) <= args_offset:
+        await update.message.reply_text(
+            "Usage: /todoundo <ticket_number> <todo_id>\n"
+            "Or reply to an admin-side ticket message with /todoundo <todo_id>."
+        )
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    todo_id = parse_numeric_id(context.args[args_offset])
+    if todo_id is None:
+        await update.message.reply_text("Checklist item IDs must be numeric.")
+        return
+
+    existing_todo = find_ticket_todo(submission, todo_id)
+    if existing_todo is None:
+        await update.message.reply_text(f"Checklist item #{todo_id} was not found on ticket #{ticket_id}.")
+        return
+    if existing_todo.get("status") != "done":
+        await update.message.reply_text(f"Checklist item #{todo_id} is already open.")
+        return
+
+    updated_submission, updated_todo = set_ticket_todo_status(ticket_id, todo_id, done=False)
+    if updated_submission is None or updated_todo is None:
+        await update.message.reply_text("I could not reopen that checklist item.")
+        return
+
+    await update.message.reply_text(
+        f"Checklist item #{todo_id} reopened for ticket #{ticket_id}.\n\n{build_ticket_todos_section(updated_submission)}",
+        reply_markup=build_ticket_actions_markup(updated_submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def todoremind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None or len(context.args) <= args_offset + 1:
+        await update.message.reply_text(build_todo_reminder_usage())
+        return
+    if submission is None:
+        await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    todo_id = parse_numeric_id(context.args[args_offset])
+    if todo_id is None:
+        await update.message.reply_text("Checklist item IDs must be numeric.")
+        return
+
+    reminder_value = context.args[args_offset + 1].strip().lower()
+    existing_todo = find_ticket_todo(submission, todo_id)
+    if existing_todo is None:
+        await update.message.reply_text(f"Checklist item #{todo_id} was not found on ticket #{ticket_id}.")
+        return
+    if existing_todo.get("status") == "done":
+        await update.message.reply_text("Reminders can only be set on open checklist items.")
+        return
+
+    remind_at = ""
+    if reminder_value != "off":
+        offset = parse_reminder_offset(reminder_value)
+        if offset is None:
+            await update.message.reply_text(build_todo_reminder_usage())
+            return
+        remind_at = (datetime.now(timezone.utc) + offset).isoformat()
+
+    updated_submission, updated_todo = set_ticket_todo_reminder(ticket_id, todo_id, remind_at)
+    if updated_submission is None or updated_todo is None:
+        await update.message.reply_text("I could not update that reminder.")
+        return
+
+    reminder_text = "Reminder cleared." if not remind_at else f"Reminder set for {format_display_datetime(remind_at)}."
+    await update.message.reply_text(
+        f"Ticket #{ticket_id} checklist item #{todo_id}\n{reminder_text}\n\n{build_ticket_todos_section(updated_submission)}",
+        reply_markup=build_ticket_actions_markup(updated_submission),
         link_preview_options=NO_PREVIEW,
     )
 
@@ -3046,13 +4518,13 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text(
         step_text(
             1,
-            9,
-            "Choose the topic that fits your request best.\n"
-            "You can tap a suggestion or write your own topic.",
+            intake_total_steps("guided"),
+            "What kind of request is this?\n"
+            "This keeps mentorship, services, collaboration, and speaking requests routed cleanly.",
         ),
-        reply_markup=build_keyboard(TRACK_MENU),
+        reply_markup=build_keyboard(REQUEST_KIND_MENU),
     )
-    return TRACK
+    return REQUEST_KIND
 
 
 async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3078,10 +4550,10 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         step_text(
             1,
-            3,
+            intake_total_steps("quick"),
             "Send your question in one message.\n"
             "Make it one clear question if possible so the mentor can answer faster.\n"
-            "You can ask about research direction, technical guidance, project review, academic growth, career, startup ideas, or your own topic.",
+            "You can use this for mentorship, services, collaboration, speaking, or your own topic.",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -3113,6 +4585,7 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     reset_request(context)
     context.user_data["intake_mode"] = "quick"
     context.user_data["request"] = {
+        "request_kind": "other",
         "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
@@ -3124,14 +4597,52 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         step_text(
             2,
-            3,
-            "How should the answer be delivered?\n"
-            "Private reply keeps the request and answer inside the bot.\n"
-            "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
+            intake_total_steps("quick"),
+            "What kind of request is this?\n"
+            "This sets the routing context without forcing the full guided intake.",
         ),
-        reply_markup=build_keyboard(ANSWER_MODE_MENU),
+        reply_markup=build_keyboard(REQUEST_KIND_MENU),
     )
-    return ANSWER_MODE
+    return REQUEST_KIND
+
+
+async def capture_request_kind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message is None:
+        return REQUEST_KIND
+
+    request_kind = (update.message.text or "").strip()
+    if request_kind not in REQUEST_KIND_CHOICES:
+        await update.message.reply_text(
+            "Choose the request type that fits best.",
+            reply_markup=build_keyboard(REQUEST_KIND_MENU),
+        )
+        return REQUEST_KIND
+
+    normalized_kind = normalize_request_kind(request_kind)
+    context.user_data["request"]["request_kind"] = normalized_kind
+    intake_mode = context.user_data.get("intake_mode", "guided")
+    if intake_mode == "quick":
+        await update.message.reply_text(
+            step_text(
+                3,
+                intake_total_steps("quick"),
+                "How should the answer be delivered?\n"
+                "Private reply keeps the request and answer inside the bot.\n"
+                "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
+            ),
+            reply_markup=build_keyboard(ANSWER_MODE_MENU),
+        )
+        return ANSWER_MODE
+
+    await update.message.reply_text(
+        step_text(
+            2,
+            intake_total_steps("guided"),
+            build_track_prompt(normalized_kind),
+        ),
+        reply_markup=build_keyboard(track_menu_for_request_kind(normalized_kind)),
+    )
+    return TRACK
 
 
 async def capture_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3140,17 +4651,18 @@ async def capture_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     track = (update.message.text or "").strip()
     if not track:
+        request_kind = context.user_data.get("request", {}).get("request_kind", "other")
         await update.message.reply_text(
             "Choose one of the suggested topics or write your own.",
-            reply_markup=build_keyboard(TRACK_MENU),
+            reply_markup=build_keyboard(track_menu_for_request_kind(request_kind)),
         )
         return TRACK
 
     context.user_data["request"]["track"] = track
     await update.message.reply_text(
         step_text(
-            2,
-            9,
+            3,
+            intake_total_steps("guided"),
             "What stage are you at right now?\n"
             "You can tap a suggestion or write your own stage.",
         ),
@@ -3174,8 +4686,8 @@ async def capture_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["request"]["level"] = level
     await update.message.reply_text(
         step_text(
-            3,
-            9,
+            4,
+            intake_total_steps("guided"),
             "What outcome are you trying to achieve?\n"
             "State one concrete outcome so the mentor can focus on the result you want, not just the problem.",
         ),
@@ -3196,8 +4708,8 @@ async def capture_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data["request"]["goal"] = goal
     await update.message.reply_text(
         step_text(
-            4,
-            9,
+            5,
+            intake_total_steps("guided"),
             "What is the main challenge or blocker right now?\n"
             "Name the one main blocker so the mentor can avoid generic advice.",
         )
@@ -3217,8 +4729,8 @@ async def capture_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["request"]["challenge"] = challenge
     await update.message.reply_text(
         step_text(
-            5,
-            9,
+            6,
+            intake_total_steps("guided"),
             "Write your question as clearly as you can.\n"
             "A single direct question usually gets a faster and more useful answer.",
         )
@@ -3238,8 +4750,8 @@ async def capture_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data["request"]["question"] = question
     await update.message.reply_text(
         step_text(
-            6,
-            9,
+            7,
+            intake_total_steps("guided"),
             "Share any extra context, links, deadlines, or attempts so far.\n"
             "Only include what matters for this case.\n"
             f"If there is nothing else to add, send {SKIP_LABEL}.",
@@ -3259,8 +4771,8 @@ async def capture_context(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     await update.message.reply_text(
         step_text(
-            7,
-            9,
+            8,
+            intake_total_steps("guided"),
             "How urgent is this request?\n"
             "This helps the mentor prioritize the queue.",
         ),
@@ -3284,8 +4796,8 @@ async def capture_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data["request"]["urgency"] = urgency
     await update.message.reply_text(
         step_text(
-            8,
             9,
+            intake_total_steps("guided"),
             "How should the answer be delivered?\n"
             "Private reply keeps the request and answer inside the bot and cannot be switched to public later.\n"
             "Public answer keeps your identity private and may still be answered privately if that is more useful.",
@@ -3308,7 +4820,7 @@ async def capture_answer_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ANSWER_MODE
 
     context.user_data["request"]["answer_mode"] = normalize_answer_mode(answer_mode)
-    total_steps = 3 if context.user_data.get("intake_mode") == "quick" else 9
+    total_steps = intake_total_steps(context.user_data.get("intake_mode", "guided"))
     await update.message.reply_text(
         step_text(total_steps, total_steps, build_contact_visibility_prompt(update.effective_user)),
         reply_markup=build_keyboard(CONTACT_VISIBILITY_MENU),
@@ -3346,6 +4858,7 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
         return QUICK_QUESTION
 
     context.user_data["request"] = {
+        "request_kind": "other",
         "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
@@ -3357,14 +4870,13 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         step_text(
             2,
-            3,
-            "How should the answer be delivered?\n"
-            "Private reply keeps the request and answer inside the bot and cannot be switched to public later.\n"
-            "Public answer keeps your identity private and may still be answered privately if that is more useful.",
+            intake_total_steps("quick"),
+            "What kind of request is this?\n"
+            "This keeps the ticket searchable without forcing the full guided flow.",
         ),
-        reply_markup=build_keyboard(ANSWER_MODE_MENU),
+        reply_markup=build_keyboard(REQUEST_KIND_MENU),
     )
-    return ANSWER_MODE
+    return REQUEST_KIND
 
 
 async def confirm_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3397,7 +4909,7 @@ async def cancel_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     reset_request(context)
     if update.message is not None:
         await update.message.reply_text(
-            "Your current mentorship request was cancelled.",
+            "Your current request was cancelled.",
             reply_markup=build_keyboard(MAIN_MENU),
         )
     return ConversationHandler.END
@@ -3434,6 +4946,72 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if is_ticket_owner:
         message_text = append_user_cta(message_text, ticket_id, submission)
     await update.message.reply_text(message_text, link_preview_options=NO_PREVIEW)
+
+
+async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    admin_view = is_admin(context, update.effective_user.id if update.effective_user else None)
+    link = cta_services_url()
+    if not link:
+        await update.message.reply_text(
+            build_services_message(),
+            reply_markup=build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU),
+            link_preview_options=NO_PREVIEW,
+        )
+        return
+
+    await update.message.reply_text(
+        build_services_message(),
+        reply_markup=build_services_markup(link),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def contact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    admin_view = is_admin(context, update.effective_user.id if update.effective_user else None)
+    reply_markup = build_contact_markup()
+    if reply_markup is None:
+        reply_markup = build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU)
+    await update.message.reply_text(
+        build_contact_message(),
+        reply_markup=reply_markup,
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def website_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    admin_view = is_admin(context, update.effective_user.id if update.effective_user else None)
+    reply_markup = build_website_markup()
+    if reply_markup is None:
+        reply_markup = build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU)
+    await update.message.reply_text(
+        build_website_message(),
+        reply_markup=reply_markup,
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    admin_view = is_admin(context, update.effective_user.id if update.effective_user else None)
+    reply_markup = build_profile_markup()
+    if reply_markup is None:
+        reply_markup = build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU)
+    await update.message.reply_text(
+        build_profile_message(),
+        reply_markup=reply_markup,
+        link_preview_options=NO_PREVIEW,
+    )
 
 
 async def meeting_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4283,6 +5861,12 @@ async def post_init(application: Application) -> None:
             first=3600,
             name="auto_end_stale_tickets",
         )
+        application.job_queue.run_repeating(
+            send_due_todo_reminders,
+            interval=TODO_REMINDER_SWEEP_SECONDS,
+            first=TODO_REMINDER_SWEEP_SECONDS,
+            name="send_due_todo_reminders",
+        )
 
 
 def main() -> None:
@@ -4299,6 +5883,9 @@ def main() -> None:
     how_it_works_pattern = rf"^{re.escape(HOW_IT_WORKS_LABEL)}$"
     response_times_pattern = rf"^{re.escape(RESPONSE_TIMES_LABEL)}$"
     book_meeting_pattern = rf"^{re.escape(BOOK_MEETING_LABEL)}$"
+    services_pattern = rf"^{re.escape(SERVICES_LABEL)}$"
+    contact_pattern = rf"^{re.escape(CONTACT_LABEL)}$"
+    website_pattern = rf"^{re.escape(WEBSITE_LABEL)}$"
     dashboard_pattern = rf"^{re.escape(DASHBOARD_LABEL)}$"
     templates_pattern = rf"^{re.escape(TEMPLATES_LABEL)}$"
     tags_pattern = rf"^{re.escape(TAGS_LABEL)}$"
@@ -4324,6 +5911,9 @@ def main() -> None:
                 & ~filters.Regex(quick_question_pattern)
                 & ~filters.Regex(response_times_pattern)
                 & ~filters.Regex(book_meeting_pattern)
+                & ~filters.Regex(services_pattern)
+                & ~filters.Regex(contact_pattern)
+                & ~filters.Regex(website_pattern)
                 & ~filters.Regex(dashboard_pattern)
                 & ~filters.Regex(templates_pattern)
                 & ~filters.Regex(tags_pattern)
@@ -4332,6 +5922,7 @@ def main() -> None:
             ),
         ],
         states={
+            REQUEST_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_request_kind)],
             TRACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_track)],
             LEVEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_level)],
             GOAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_goal)],
@@ -4351,6 +5942,10 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("meeting", meeting_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("services", services_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("contact", contact_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("website", website_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("profile", profile_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("availability", availability_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("followup", followup_ticket, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("muteupdates", mute_updates, filters=filters.ChatType.PRIVATE))
@@ -4360,6 +5955,15 @@ def main() -> None:
     app.add_handler(CommandHandler("adminstatus", admin_status))
     app.add_handler(CommandHandler("storagestatus", storage_status))
     app.add_handler(CommandHandler("dashboard", dashboard_command))
+    app.add_handler(CommandHandler("ticket", ticket_command))
+    app.add_handler(CommandHandler("tickets", tickets_command))
+    app.add_handler(CommandHandler("note", note_command))
+    app.add_handler(CommandHandler("notes", notes_command))
+    app.add_handler(CommandHandler("todo", todo_command))
+    app.add_handler(CommandHandler("todos", todos_command))
+    app.add_handler(CommandHandler("tododone", tododone_command))
+    app.add_handler(CommandHandler("todoundo", todoundo_command))
+    app.add_handler(CommandHandler("todoremind", todoremind_command))
     app.add_handler(CommandHandler("templates", templates_command))
     app.add_handler(CommandHandler("tags", tags_command))
     app.add_handler(CommandHandler("savetag", save_tag_command))
@@ -4403,6 +6007,15 @@ def main() -> None:
     )
     app.add_handler(
         MessageHandler(filters.Regex(book_meeting_pattern) & ~filters.REPLY, meeting_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(services_pattern) & ~filters.REPLY, services_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(contact_pattern) & ~filters.REPLY, contact_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(website_pattern) & ~filters.REPLY, website_command)
     )
     app.add_handler(
         MessageHandler(filters.Regex(dashboard_pattern) & ~filters.REPLY, dashboard_command)
