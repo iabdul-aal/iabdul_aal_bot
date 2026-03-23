@@ -28,7 +28,9 @@ Set these in Railway:
 ```env
 TELEGRAM_TOKEN=your_rotated_bot_token
 ADMIN_ID=
-PUBLIC_CHANNEL_URL=https://t.me/your_channel
+MENTOR_USERNAME=@islamibr29
+PUBLIC_CHANNEL_URL=https://t.me/iabdul_aal
+DISCUSSION_GROUP_URL=https://t.me/+dFtrvA9rLjwxN2U0
 DISCUSSION_GROUP_ID=
 ```
 

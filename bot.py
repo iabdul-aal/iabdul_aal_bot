@@ -28,9 +28,15 @@ from telegram.ext import (
 
 load_dotenv()
 
+DEFAULT_MENTOR_USERNAME = "@islamibr29"
+DEFAULT_PUBLIC_CHANNEL_URL = "https://t.me/iabdul_aal"
+DEFAULT_DISCUSSION_GROUP_URL = "https://t.me/+dFtrvA9rLjwxN2U0"
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
-PUBLIC_CHANNEL_URL = (os.getenv("PUBLIC_CHANNEL_URL") or "").strip()
+MENTOR_USERNAME = (os.getenv("MENTOR_USERNAME") or DEFAULT_MENTOR_USERNAME).strip()
+PUBLIC_CHANNEL_URL = (os.getenv("PUBLIC_CHANNEL_URL") or DEFAULT_PUBLIC_CHANNEL_URL).strip()
+DISCUSSION_GROUP_URL = (os.getenv("DISCUSSION_GROUP_URL") or DEFAULT_DISCUSSION_GROUP_URL).strip()
 DISCUSSION_GROUP_ID_RAW = (os.getenv("DISCUSSION_GROUP_ID") or "").strip()
 DATA_DIR = Path(
     os.getenv("DATA_DIR")
@@ -210,6 +216,11 @@ def format_status(status: str) -> str:
 def build_public_notice(ticket_id: int, link: str) -> str:
     if link:
         return f"Your public answer for ticket #{ticket_id} is available here:\n{link}"
+    if DISCUSSION_GROUP_URL:
+        return (
+            f"Your public answer for ticket #{ticket_id} is ready.\n"
+            f"Check the discussion group: {DISCUSSION_GROUP_URL}"
+        )
     if PUBLIC_CHANNEL_URL:
         return (
             f"Your public answer for ticket #{ticket_id} is ready.\n"
@@ -225,6 +236,8 @@ def build_public_answer_message(ticket_id: int, answer_text: str, link: str) -> 
     lines = [f"Public answer for ticket #{ticket_id} has been posted."]
     if link:
         lines.append(f"Link: {link}")
+    elif DISCUSSION_GROUP_URL:
+        lines.append(f"Discussion group: {DISCUSSION_GROUP_URL}")
     elif PUBLIC_CHANNEL_URL:
         lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
     if answer_text:
@@ -358,6 +371,10 @@ def build_user_status(record: dict) -> str:
             lines.append(f"Public link: {latest['link']}")
         elif latest.get("mode") == "public_discussion" and latest.get("link"):
             lines.append(f"Discussion link: {latest['link']}")
+        elif latest.get("mode") == "public" and DISCUSSION_GROUP_URL:
+            lines.append(f"Discussion group: {DISCUSSION_GROUP_URL}")
+        elif latest.get("mode") == "public_discussion" and DISCUSSION_GROUP_URL:
+            lines.append(f"Discussion group: {DISCUSSION_GROUP_URL}")
         elif latest.get("mode") == "public" and PUBLIC_CHANNEL_URL:
             lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
         elif latest.get("mode") == "public_discussion":
@@ -462,7 +479,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text(
-        "Welcome to the mentorship bot.\n"
+        f"Welcome to {MENTOR_USERNAME}'s mentorship bot.\n"
         "You can send a quick question directly, or choose Ask for mentorship for a guided request.\n"
         "Each request gets a ticket number, and you can choose whether the answer should be private or public.",
         reply_markup=build_keyboard(MAIN_MENU),
@@ -491,6 +508,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Use /ask for a guided mentorship request with track, level, goal, and urgency.\n"
         "You will be asked whether you want the answer privately or publicly.\n"
         "Use /status <ticket_number> to check one of your ticket statuses.\n"
+        f"Public updates may appear in {PUBLIC_CHANNEL_URL} or the linked discussion group.\n"
         "Use /cancel any time during the guided flow.",
         reply_markup=build_keyboard(MAIN_MENU),
     )
