@@ -1,3 +1,4 @@
+import csv
 import json
 import logging
 import os
@@ -102,6 +103,7 @@ DISCUSSION_FILE = DATA_DIR / "discussion_group_id.txt"
 PUBLIC_CHANNEL_FILE = DATA_DIR / "public_channel_id.txt"
 COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
 SUBMISSIONS_FILE = DATA_DIR / "submissions.jsonl"
+SUBMISSIONS_CSV_FILE = DATA_DIR / "submissions.csv"
 TAGS_FILE = DATA_DIR / "saved_tags.json"
 USERS_FILE = DATA_DIR / "known_users.json"
 
@@ -120,8 +122,8 @@ TEMPLATES_LABEL = "Templates"
 TAGS_LABEL = "Tags"
 PRIVATE_REPLY_LABEL = "Private reply"
 PUBLIC_ANSWER_LABEL = "Public answer"
-SHOW_CONTACT_LABEL = "Share contact"
-HIDE_CONTACT_LABEL = "Hide contact"
+SHOW_CONTACT_LABEL = "Show my details"
+HIDE_CONTACT_LABEL = "Keep them private"
 SHOW_IDENTITY_LABEL = "Show identity"
 HIDE_IDENTITY_LABEL = "Hide identity"
 SUBMIT_LABEL = "Submit"
@@ -195,33 +197,44 @@ CONTACT_VISIBILITY_CHOICES = {item for row in CONTACT_VISIBILITY_MENU for item i
 REQUEST_KIND_CHOICES = {item for row in REQUEST_KIND_MENU for item in row}
 TAG_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 TAG_PLACEHOLDER_PATTERN = re.compile(r"\{\{([a-zA-Z0-9_-]+)\}\}")
-
-USER_COMMANDS = [
-    BotCommand("start", "Open the request bot"),
-    BotCommand("ask", "Start a guided request"),
-    BotCommand("quick", "Send a one-message request"),
-    BotCommand("followup", "Continue a public ticket by ticket ID"),
-    BotCommand("meeting", "Open the Calendly meeting link"),
-    BotCommand("services", "Open the website services page"),
-    BotCommand("contact", "Open direct contact routes"),
-    BotCommand("website", "Browse the website sections"),
-    BotCommand("profile", "Open the profile snapshot"),
-    BotCommand("availability", "See response windows"),
-    BotCommand("help", "See how the bot works"),
-    BotCommand("muteupdates", "Stop channel news broadcasts in the bot"),
-    BotCommand("resumeupdates", "Resume channel news broadcasts in the bot"),
-    BotCommand("cancel", "Cancel the current request"),
-    BotCommand("status", "Check one of your ticket statuses"),
+SUBMISSION_CSV_COLUMNS = [
+    "id",
+    "created_at",
+    "updated_at",
+    "display_time",
+    "status",
+    "source",
+    "user_id",
+    "user_display_name",
+    "user_username",
+    "request_kind",
+    "track",
+    "level",
+    "urgency",
+    "answer_mode",
+    "contact_visibility",
+    "goal",
+    "challenge",
+    "question",
+    "context",
+    "public_request",
+    "response_count",
+    "note_count",
+    "todo_count",
+    "open_todo_count",
+    "private_thread_json",
+    "discussion_json",
+    "notes_json",
+    "todos_json",
+    "responses_json",
 ]
 
-SETUP_COMMANDS = USER_COMMANDS + [
-    BotCommand("claimadmin", "Claim admin access for the bot"),
-]
-
-ADMIN_COMMANDS = USER_COMMANDS + [
+ADMIN_COMMANDS = [
+    BotCommand("start", "Open the admin dashboard"),
+    BotCommand("help", "Show admin commands"),
     BotCommand("adminstatus", "Show the current admin ID"),
     BotCommand("storagestatus", "Show queue storage status"),
-    BotCommand("dashboard", "Show the mentor dashboard"),
+    BotCommand("dashboard", "Show the admin dashboard"),
     BotCommand("ticket", "Show one ticket by ID"),
     BotCommand("tickets", "List tickets by queue state"),
     BotCommand("note", "Add an internal note to a ticket"),
@@ -325,7 +338,6 @@ FAST_REPLY_TEMPLATES = {
         "title": "Meeting invite",
         "body": (
             "A live meeting looks like the fastest route for this case.\n"
-            "Book here: {{meeting_link}}\n"
             "If the booking form has notes, mention ticket #{{ticket}} so the meeting stays tied to this case."
         ),
     },
@@ -368,7 +380,100 @@ def parse_numeric_id(value: str) -> int | None:
 
 
 def build_keyboard(rows: list[list[object]]) -> ReplyKeyboardMarkup:
+    if rows is MAIN_MENU:
+        rows = build_user_main_menu()
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def feature_booking_enabled() -> bool:
+    return booking_enabled()
+
+
+def feature_services_enabled() -> bool:
+    return bool(cta_services_url())
+
+
+def feature_contact_enabled() -> bool:
+    return any([contact_page_url(), contact_email(), linkedin_url(), whatsapp_url(), calendly_url()])
+
+
+def feature_website_enabled() -> bool:
+    return bool(website_navigation_links())
+
+
+def feature_profile_enabled() -> bool:
+    return any([website_page_url("about"), cta_website_url(), cta_services_url(), cv_page_url(), github_url(), orcid_url(), scholar_url()])
+
+
+def feature_channel_updates_enabled() -> bool:
+    return bool(get_public_channel_id() or cta_channel_url())
+
+
+def build_user_commands() -> list[BotCommand]:
+    commands = [
+        BotCommand("start", "Open the request bot"),
+        BotCommand("ask", "Start a guided request"),
+        BotCommand("quick", "Send a one-message request"),
+        BotCommand("followup", "Continue a public ticket by ticket ID"),
+    ]
+    if feature_booking_enabled():
+        commands.append(BotCommand("meeting", "Open the meeting link"))
+    if feature_services_enabled():
+        commands.append(BotCommand("services", "Open the services page"))
+    if feature_contact_enabled():
+        commands.append(BotCommand("contact", "Open contact routes"))
+    if feature_website_enabled():
+        commands.append(BotCommand("website", "Browse the website"))
+    if feature_profile_enabled():
+        commands.append(BotCommand("profile", "Open the profile snapshot"))
+    commands.extend(
+        [
+            BotCommand("availability", "See response windows"),
+            BotCommand("help", "See how the bot works"),
+        ]
+    )
+    if feature_channel_updates_enabled():
+        commands.extend(
+            [
+                BotCommand("muteupdates", "Pause channel news in the bot"),
+                BotCommand("resumeupdates", "Resume channel news in the bot"),
+            ]
+        )
+    commands.extend(
+        [
+            BotCommand("cancel", "Cancel the current request"),
+            BotCommand("status", "Check one of your ticket statuses"),
+        ]
+    )
+    return commands
+
+
+def build_setup_commands() -> list[BotCommand]:
+    return build_user_commands() + [BotCommand("claimadmin", "Claim admin access for the bot")]
+
+
+def build_user_main_menu() -> list[list[object]]:
+    rows: list[list[object]] = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL]]
+    secondary_row: list[object] = []
+    if feature_booking_enabled():
+        secondary_row.append(BOOK_MEETING_LABEL)
+    if feature_services_enabled():
+        secondary_row.append(SERVICES_LABEL)
+    if secondary_row:
+        rows.append(secondary_row)
+    return rows
+
+
+def user_main_menu_markup() -> ReplyKeyboardMarkup:
+    return build_keyboard(build_user_main_menu())
+
+
+def admin_menu_markup() -> ReplyKeyboardMarkup:
+    return build_keyboard(ADMIN_MENU)
+
+
+def standard_private_menu(admin_view: bool) -> ReplyKeyboardMarkup:
+    return admin_menu_markup() if admin_view else user_main_menu_markup()
 
 
 def build_chat_request_keyboard(button_text: str, request_chat: KeyboardButtonRequestChat) -> ReplyKeyboardMarkup:
@@ -729,7 +834,7 @@ def validate_storage_configuration() -> None:
 async def sync_commands(application: Application) -> None:
     admin_id = application.bot_data.get("admin_id")
     await application.bot.set_my_commands(
-        SETUP_COMMANDS if admin_id is None else USER_COMMANDS,
+        build_setup_commands() if admin_id is None else build_user_commands(),
         scope=BotCommandScopeAllPrivateChats(),
     )
 
@@ -835,10 +940,128 @@ async def validate_discussion_group(context: ContextTypes.DEFAULT_TYPE, chat_id:
     return True, ""
 
 
+def submission_csv_row(submission: dict) -> dict[str, str]:
+    request = normalize_payload(submission.get("request", {}))
+    user = submission.get("user", {})
+    notes = submission.get("notes", [])
+    todos = submission.get("todos", [])
+    responses = submission.get("responses", [])
+    return {
+        "id": str(int(submission.get("id", 0))),
+        "created_at": str(submission.get("created_at", "")),
+        "updated_at": str(submission.get("updated_at", "")),
+        "display_time": str(submission.get("display_time", "")),
+        "status": str(submission.get("status", "")),
+        "source": str(submission.get("source", "")),
+        "user_id": str(user.get("id", "")),
+        "user_display_name": str(user.get("display_name", "")),
+        "user_username": str(user.get("username", "")),
+        "request_kind": str(request.get("request_kind", "")),
+        "track": str(request.get("track", "")),
+        "level": str(request.get("level", "")),
+        "urgency": str(request.get("urgency", "")),
+        "answer_mode": str(request.get("answer_mode", "")),
+        "contact_visibility": str(request.get("contact_visibility", "")),
+        "goal": str(request.get("goal", "")),
+        "challenge": str(request.get("challenge", "")),
+        "question": str(request.get("question", "")),
+        "context": str(request.get("context", "")),
+        "public_request": str(submission.get("public_request", "")),
+        "response_count": str(len(responses)),
+        "note_count": str(len(notes)),
+        "todo_count": str(len(todos)),
+        "open_todo_count": str(sum(1 for todo in todos if todo.get("status") != "done")),
+        "private_thread_json": json.dumps(submission.get("private_thread", {}), ensure_ascii=False),
+        "discussion_json": json.dumps(submission.get("discussion", {}), ensure_ascii=False),
+        "notes_json": json.dumps(notes, ensure_ascii=False),
+        "todos_json": json.dumps(todos, ensure_ascii=False),
+        "responses_json": json.dumps(responses, ensure_ascii=False),
+    }
+
+
+def write_submissions_csv_unlocked(submissions: list[dict]) -> None:
+    temp_csv = SUBMISSIONS_CSV_FILE.with_suffix(".csv.tmp")
+    with temp_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SUBMISSION_CSV_COLUMNS)
+        writer.writeheader()
+        for submission in submissions:
+            writer.writerow(submission_csv_row(submission))
+    os.replace(temp_csv, SUBMISSIONS_CSV_FILE)
+
+
+def parse_submission_csv_json(raw_value: str, fallback):
+    text = (raw_value or "").strip()
+    if not text:
+        return fallback
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def read_submissions_csv_unlocked() -> list[dict]:
+    ensure_data_dir()
+    if not SUBMISSIONS_CSV_FILE.exists():
+        return []
+
+    submissions: list[dict] = []
+    with SUBMISSIONS_CSV_FILE.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            ticket_id = parse_numeric_id(str(row.get("id", "")))
+            if ticket_id is None:
+                continue
+            submissions.append(
+                {
+                    "id": ticket_id,
+                    "created_at": str(row.get("created_at", "")),
+                    "updated_at": str(row.get("updated_at", "")),
+                    "display_time": str(row.get("display_time", "")),
+                    "status": str(row.get("status", "")),
+                    "source": str(row.get("source", "")),
+                    "user": {
+                        "id": parse_numeric_id(str(row.get("user_id", ""))),
+                        "display_name": str(row.get("user_display_name", "")),
+                        "username": str(row.get("user_username", "")),
+                    },
+                    "request": normalize_payload(
+                        {
+                            "request_kind": row.get("request_kind", ""),
+                            "track": row.get("track", ""),
+                            "level": row.get("level", ""),
+                            "urgency": row.get("urgency", ""),
+                            "answer_mode": row.get("answer_mode", ""),
+                            "contact_visibility": row.get("contact_visibility", ""),
+                            "goal": row.get("goal", ""),
+                            "challenge": row.get("challenge", ""),
+                            "question": row.get("question", ""),
+                            "context": row.get("context", ""),
+                        }
+                    ),
+                    "public_request": str(row.get("public_request", "")),
+                    "private_thread": parse_submission_csv_json(row.get("private_thread_json", ""), {}),
+                    "discussion": parse_submission_csv_json(row.get("discussion_json", ""), {}),
+                    "notes": parse_submission_csv_json(row.get("notes_json", ""), []),
+                    "todos": parse_submission_csv_json(row.get("todos_json", ""), []),
+                    "responses": parse_submission_csv_json(row.get("responses_json", ""), []),
+                }
+            )
+    return submissions
+
+
+def persist_submissions_unlocked(submissions: list[dict]) -> None:
+    temp_file = SUBMISSIONS_FILE.with_suffix(".tmp")
+    with temp_file.open("w", encoding="utf-8") as handle:
+        for submission in submissions:
+            handle.write(json.dumps(submission, ensure_ascii=True) + "\n")
+    os.replace(temp_file, SUBMISSIONS_FILE)
+    write_submissions_csv_unlocked(submissions)
+
+
 def _read_submissions_unlocked() -> list[dict]:
     ensure_data_dir()
     if not SUBMISSIONS_FILE.exists():
-        return []
+        return read_submissions_csv_unlocked()
 
     submissions: list[dict] = []
     with SUBMISSIONS_FILE.open("r", encoding="utf-8") as handle:
@@ -860,12 +1083,8 @@ def read_submissions() -> list[dict]:
 
 def write_submissions(submissions: list[dict]) -> None:
     ensure_data_dir()
-    temp_file = SUBMISSIONS_FILE.with_suffix(".tmp")
     with STORAGE_LOCK:
-        with temp_file.open("w", encoding="utf-8") as handle:
-            for submission in submissions:
-                handle.write(json.dumps(submission, ensure_ascii=True) + "\n")
-        os.replace(temp_file, SUBMISSIONS_FILE)
+        persist_submissions_unlocked(submissions)
 
 
 def reserve_submission_id() -> int:
@@ -885,11 +1104,7 @@ def save_submission(record: dict) -> None:
     with STORAGE_LOCK:
         submissions = _read_submissions_unlocked()
         submissions.append(record)
-        temp_file = SUBMISSIONS_FILE.with_suffix(".tmp")
-        with temp_file.open("w", encoding="utf-8") as handle:
-            for submission in submissions:
-                handle.write(json.dumps(submission, ensure_ascii=True) + "\n")
-        os.replace(temp_file, SUBMISSIONS_FILE)
+        persist_submissions_unlocked(submissions)
 
 
 def mutate_submission(
@@ -909,11 +1124,7 @@ def mutate_submission(
 
             submission["updated_at"] = updated_at
             submissions[index] = submission
-            temp_file = SUBMISSIONS_FILE.with_suffix(".tmp")
-            with temp_file.open("w", encoding="utf-8") as handle:
-                for item in submissions:
-                    handle.write(json.dumps(item, ensure_ascii=True) + "\n")
-            os.replace(temp_file, SUBMISSIONS_FILE)
+            persist_submissions_unlocked(submissions)
             return submission
     return None
 
@@ -931,11 +1142,7 @@ def append_response(ticket_id: int, status: str, response: dict) -> dict | None:
             response_record["created_at"] = updated_at
             submission.setdefault("responses", []).append(response_record)
             submissions[index] = submission
-            temp_file = SUBMISSIONS_FILE.with_suffix(".tmp")
-            with temp_file.open("w", encoding="utf-8") as handle:
-                for item in submissions:
-                    handle.write(json.dumps(item, ensure_ascii=True) + "\n")
-            os.replace(temp_file, SUBMISSIONS_FILE)
+            persist_submissions_unlocked(submissions)
             return submission
     return None
 
@@ -1302,7 +1509,7 @@ def normalize_contact_visibility(value: str) -> str:
 
 
 def format_contact_visibility(value: str) -> str:
-    return "Hidden from admin view" if normalize_contact_visibility(value) == "hidden" else "Shown to admin"
+    return "Private" if normalize_contact_visibility(value) == "hidden" else "Visible to admin"
 
 
 def format_source(value: str) -> str:
@@ -1364,9 +1571,9 @@ def build_public_prompt(payload: dict) -> str:
 def build_public_destination_text() -> str:
     destinations: list[str] = []
     if DISCUSSION_GROUP_URL:
-        destinations.append(f"discussion group: {DISCUSSION_GROUP_URL}")
+        destinations.append("the discussion group")
     if PUBLIC_CHANNEL_URL:
-        destinations.append(f"channel: {PUBLIC_CHANNEL_URL}")
+        destinations.append("the public channel")
     if not destinations:
         return "the public channel or discussion once configured"
     return " or ".join(destinations)
@@ -1434,33 +1641,34 @@ def build_ticket_tags(ticket_id: int, submission: dict | None = None) -> dict[st
     return tags
 
 
-def build_meeting_message(ticket_id: int | None = None, submission: dict | None = None) -> str:
+def build_meeting_message(ticket_id: int | None = None, submission: dict | None = None, admin_view: bool = False) -> str:
     link = build_meeting_link(ticket_id, submission)
     if not link:
-        return (
-            "Meeting booking is not configured yet.\n"
-            "The mentor can enable it by setting CALENDLY_URL or a booking tag."
-        )
+        if admin_view:
+            return (
+                "Meeting booking is not configured yet.\n"
+                "Set CALENDLY_URL or a booking tag to enable it."
+            )
+        return "Meeting booking is not available right now."
 
-    lines = [CALENDLY_LABEL, "", CALENDLY_TEXT]
+    lines = ["Meeting", "Use this when a short call will move the request faster."]
     if ticket_id is not None:
         lines.extend(
             [
                 "",
                 f"Ticket: #{ticket_id}",
-                f"Book here: {link}",
                 f"If the booking form has notes, mention ticket #{ticket_id}.",
             ]
         )
-    else:
-        lines.extend(["", f"Book here: {link}"])
     return "\n".join(lines)
 
 
 def build_meeting_markup(link: str, ticket_id: int | None = None, admin: bool = False) -> InlineKeyboardMarkup | None:
     buttons: list[InlineKeyboardButton] = []
     if link:
-        buttons.append(build_copy_button("Copy meeting link", link))
+        buttons.append(InlineKeyboardButton("Open booking page", url=link))
+        if admin:
+            buttons.append(build_copy_button("Copy meeting link", link))
     if admin and ticket_id is not None:
         buttons.append(build_copy_button("Copy /sendmeeting", f"/sendmeeting {ticket_id}"))
     return build_inline_markup(buttons)
@@ -1487,19 +1695,17 @@ def build_meeting_status_message() -> str:
     )
 
 
-def build_services_message() -> str:
+def build_services_message(admin_view: bool = False) -> str:
     link = cta_services_url()
     if not link:
-        return (
-            "The services page is not configured yet.\n"
-            "Set CTA_SERVICES_URL directly, or set CTA_WEBSITE_URL or TAG_WEBSITE so the bot can open /services."
-        )
+        if admin_view:
+            return (
+                "The services page is not configured yet.\n"
+                "Set CTA_SERVICES_URL directly, or set CTA_WEBSITE_URL or TAG_WEBSITE so the bot can open /services."
+            )
+        return "That page is not available right now."
 
-    return (
-        f"{SERVICES_LABEL}\n\n"
-        "Use the website services page for scoped technical work, collaboration support, or deeper service context.\n\n"
-        f"Open here: {link}"
-    )
+    return "Services\nUse this when the work is larger than a single question."
 
 
 def build_services_markup(link: str) -> InlineKeyboardMarkup | None:
@@ -1591,36 +1797,22 @@ def cta_services_url() -> str:
     return website_page_url("services")
 
 
-def build_contact_message() -> str:
-    methods: list[str] = []
+def build_contact_message(admin_view: bool = False) -> str:
     email = contact_email()
     contact_url = contact_page_url()
     booking_url = calendly_url()
     linkedin = linkedin_url()
     whatsapp = whatsapp_url()
-    if contact_url:
-        methods.append(f"Contact page: {contact_url}")
-    if booking_url:
-        methods.append(f"Schedule: {booking_url}")
-    if linkedin:
-        methods.append(f"LinkedIn: {linkedin}")
-    if whatsapp:
-        methods.append(f"WhatsApp: {whatsapp}")
-    if email:
-        methods.append(f"Email: {email}")
 
-    if not methods:
-        return (
-            "Direct contact routes are not configured yet.\n"
-            "Set CTA_WEBSITE_URL or TAG_CONTACT first, and optionally define tags like TAG_EMAIL, TAG_LINKEDIN, or TAG_WHATSAPP."
-        )
+    if not any([email, contact_url, booking_url, linkedin, whatsapp]):
+        if admin_view:
+            return (
+                "Direct contact routes are not configured yet.\n"
+                "Set CTA_WEBSITE_URL or TAG_CONTACT first, and optionally define tags like TAG_EMAIL, TAG_LINKEDIN, or TAG_WHATSAPP."
+            )
+        return "Direct contact routes are not available right now."
 
-    return (
-        "Contact routes\n\n"
-        "Use the route that matches the request. Detailed async requests fit email or the contact page best. "
-        "Live scoping fits the booking link. Short routing conversations fit LinkedIn or WhatsApp.\n\n"
-        + "\n".join(methods)
-    )
+    return "Contact\nChoose the route that fits best."
 
 
 def build_contact_markup() -> InlineKeyboardMarkup | None:
@@ -1655,20 +1847,17 @@ def website_navigation_links() -> list[tuple[str, str]]:
     return links
 
 
-def build_website_message() -> str:
+def build_website_message(admin_view: bool = False) -> str:
     links = website_navigation_links()
     if not links:
-        return (
-            "The website is not configured yet.\n"
-            "Set CTA_WEBSITE_URL or TAG_WEBSITE so the bot can open the website sections."
-        )
+        if admin_view:
+            return (
+                "The website is not configured yet.\n"
+                "Set CTA_WEBSITE_URL or TAG_WEBSITE so the bot can open the website sections."
+            )
+        return "The website is not available right now."
 
-    section_labels = ", ".join(label for label, _ in links)
-    return (
-        "Website hub\n\n"
-        "Open the public website sections below for background, publications, talks, projects, materials, and broader service context.\n\n"
-        f"Available now: {section_labels}"
-    )
+    return "Website\nOpen a section below."
 
 
 def build_website_markup() -> InlineKeyboardMarkup | None:
@@ -1679,33 +1868,18 @@ def build_website_markup() -> InlineKeyboardMarkup | None:
     return build_inline_markup(buttons)
 
 
-def build_profile_message() -> str:
+def build_profile_message(admin_view: bool = False) -> str:
+    if not admin_view and not feature_profile_enabled():
+        return "The public profile is not available right now."
+
     about_url = website_page_url("about") or cta_website_url()
     publications_url = website_page_url("publications")
     talks_url = website_page_url("talks")
     projects_url = website_page_url("projects")
     services_url = cta_services_url()
     cv_url = cv_page_url()
-    lines = [
-        "Profile snapshot",
-        "",
-        "This bot is the private intake path. The website carries the public profile, publications, talks, projects, and broader service scope.",
-        "",
-        "Current scope",
-    ]
+    lines = ["Profile", "", "Use the buttons below for background, publications, projects, and current scope.", "", "Current scope"]
     lines.extend(f"- {item}" for item in PROFILE_SCOPE_LINES)
-    if about_url or publications_url or talks_url or projects_url or services_url or cv_url:
-        lines.extend(
-            [
-                "",
-                f"Primary profile: {about_url or cta_website_url()}",
-                f"Services: {services_url}" if services_url else "",
-                f"Publications: {publications_url}" if publications_url else "",
-                f"Talks: {talks_url}" if talks_url else "",
-                f"Projects: {projects_url}" if projects_url else "",
-                f"CV: {cv_url}" if cv_url else "",
-            ]
-        )
     return "\n".join(line for line in lines if line)
 
 
@@ -1741,21 +1915,60 @@ def build_profile_markup() -> InlineKeyboardMarkup | None:
     return build_inline_markup(buttons)
 
 
+def build_user_start_message() -> str:
+    lines = [
+        "Welcome",
+        f"Send your request to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL} in the way that feels easiest.",
+        "",
+        "Choose one",
+        f"- {GUIDED_REQUEST_LABEL} if you want help structuring it",
+        f"- {QUICK_QUESTION_LABEL} if you already know the main question",
+    ]
+    if feature_booking_enabled():
+        lines.append(f"- {BOOK_MEETING_LABEL} if a call is the better route")
+    if feature_services_enabled():
+        lines.append(f"- {SERVICES_LABEL} for larger or broader work")
+    lines.extend(
+        [
+            "",
+            "Your Telegram details are only used to route replies.",
+            "You can decide whether your name and username stay visible to the admin.",
+        ]
+    )
+    if feature_channel_updates_enabled():
+        lines.append("Use /muteupdates if you want to pause channel updates in the bot.")
+    return "\n".join(lines)
+
+
+def build_user_help_message() -> str:
+    lines = [
+        "How to use this bot",
+        f"- {GUIDED_REQUEST_LABEL} helps you shape the request",
+        f"- {QUICK_QUESTION_LABEL} is best for one focused message",
+        "- Aim for one goal, one blocker, and one main question",
+        "- Use /status <ticket> to check progress",
+        "- Use /cancel to stop the current guided flow",
+    ]
+    extra_routes: list[str] = []
+    if feature_booking_enabled():
+        extra_routes.append("/meeting")
+    if feature_services_enabled():
+        extra_routes.append("/services")
+    if feature_contact_enabled():
+        extra_routes.append("/contact")
+    if feature_website_enabled():
+        extra_routes.append("/website")
+    if feature_profile_enabled():
+        extra_routes.append("/profile")
+    if extra_routes:
+        lines.extend(["", "More options", "- " + "  ".join(extra_routes)])
+    if feature_channel_updates_enabled():
+        lines.append("- /muteupdates and /resumeupdates control channel updates in the bot")
+    return "\n".join(lines)
+
+
 def build_user_cta_lines(ticket_id: int | None = None, submission: dict | None = None) -> list[str]:
     lines: list[str] = []
-    channel_url = cta_channel_url()
-    website_url = cta_website_url()
-    services_url = cta_services_url()
-    booking_url = build_meeting_link(ticket_id, submission) or calendly_url()
-    if channel_url:
-        lines.append(f"Follow updates: {channel_url}")
-    lines.append("Use this bot again any time for focused requests.")
-    if booking_url:
-        lines.append(f"Book a meeting: {booking_url}")
-    if website_url:
-        lines.append(f"Website: {website_url}")
-    if services_url and services_url != website_url:
-        lines.append(f"Other services: {services_url}")
     if CTA_EXTRA_TEXT:
         lines.append(CTA_EXTRA_TEXT)
     return lines
@@ -1765,7 +1978,7 @@ def append_user_cta(text: str, ticket_id: int | None = None, submission: dict | 
     cta_lines = build_user_cta_lines(ticket_id, submission)
     if not cta_lines:
         return text
-    return f"{text}\n\nQuick links\n" + "\n".join(cta_lines)
+    return f"{text}\n\n" + "\n".join(cta_lines)
 
 
 async def reply_with_optional_logo(message, text: str, reply_markup) -> None:
@@ -1788,27 +2001,18 @@ async def reply_with_optional_logo(message, text: str, reply_markup) -> None:
 
 
 def build_public_posted_at_text(mode: str | None, link: str = "") -> str:
-    normalized_link = normalize_https_url(link)
     if mode == "public_discussion":
-        if DISCUSSION_GROUP_URL:
-            return f"discussion group: {DISCUSSION_GROUP_URL}"
-        if normalized_link:
-            return f"discussion group: {normalized_link}"
         return "the linked discussion group"
     if mode == "public_channel":
-        if PUBLIC_CHANNEL_URL:
-            return f"channel: {PUBLIC_CHANNEL_URL}"
-        if normalized_link:
-            return f"channel: {normalized_link}"
         return "the linked public channel"
-    if normalized_link:
-        return normalized_link
+    if normalize_https_url(link):
+        return "the published post"
     return build_public_destination_text()
 
 
 def should_skip_channel_broadcast(message) -> bool:
     text = ((getattr(message, "text", None) or getattr(message, "caption", None) or "")).strip()
-    return bool(re.match(r"^Public answer for ticket #\d+", text))
+    return bool(re.match(r"^(Public answer|Update) for ticket #\d+", text))
 
 
 def step_text(step: int, total: int, body: str) -> str:
@@ -1819,14 +2023,11 @@ def build_contact_visibility_prompt(user) -> str:
     display_name = user.full_name or user.first_name or "Unknown user"
     username = f"@{user.username}" if user.username else "Not set"
     return (
-        "What the bot receives from Telegram\n\n"
-        f"Display name: {display_name}\n"
-        f"Username: {username}\n"
-        f"Telegram routing ID: {user.id}\n\n"
-        "Why this matters\n"
-        "The bot uses this data to keep your ticket connected and deliver replies.\n"
-        "You can choose whether these details stay visible in the admin view.\n"
-        "If you hide them, the bot still keeps the routing ID privately so answers can reach you."
+        "How should your details appear?\n\n"
+        f"Name: {display_name}\n"
+        f"Username: {username}\n\n"
+        "The bot still keeps the private routing details it needs to deliver replies.\n"
+        "Choose whether your name and username stay visible to the admin."
     )
 
 
@@ -1994,21 +2195,45 @@ def build_tags_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(chunk_items(buttons, 2))
 
 
+def build_admin_help_message() -> str:
+    return (
+        "Admin guide\n\n"
+        "Start with /dashboard for the queue overview.\n"
+        "Open one case with /ticket <ticket> or scan the queue with /tickets.\n"
+        "Use /reply to answer, /note for internal context, and /todo for follow-up tracking.\n"
+        "Use /templates and /tags when you want faster replies or reusable text.\n"
+        "Use /storagestatus, /setdiscussion, /setchannel, and /meetingstatus when checking setup.\n\n"
+        "The buttons below copy the most common command patterns."
+    )
+
+
+def build_admin_help_markup() -> InlineKeyboardMarkup:
+    buttons = [
+        build_copy_button("Copy /dashboard", "/dashboard"),
+        build_copy_button("Copy /tickets", "/tickets"),
+        build_copy_button("Copy /ticket", "/ticket "),
+        build_copy_button("Copy /reply", "/reply "),
+        build_copy_button("Copy /todo", "/todo "),
+        build_copy_button("Copy /note", "/note "),
+        build_copy_button("Copy /templates", "/templates"),
+        build_copy_button("Copy /tags", "/tags"),
+        build_copy_button("Copy /storagestatus", "/storagestatus"),
+        build_copy_button("Copy /meetingstatus", "/meetingstatus"),
+    ]
+    return build_inline_markup(buttons)
+
+
 def build_availability_message() -> str:
     availability_text, _ = expand_saved_tags(MENTOR_AVAILABILITY_TEXT)
     message = (
-        "What to expect\n\n"
-        "This service is designed to stay accurate, practical, and to the point.\n"
-        "Requests are handled in focused batches so time can be used well across everyone.\n\n"
-        f"Response windows\n{availability_text}\n\n"
-        "Ticket timing\n"
-        "After the latest private reply, the ticket ends automatically after 1 day without a reply.\n"
-        "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n\n"
-        "Best way to get a strong answer\n"
-        "Send one clear goal, one main blocker, and one direct question."
+        "Response times\n\n"
+        "Requests are handled in focused batches so replies can stay useful and clear.\n\n"
+        f"Current timing\n{availability_text}\n\n"
+        "Best results come from one clear goal, one blocker, and one direct question.\n"
+        "Private tickets close after 1 day without a reply. Public tickets close after 3 days without a follow-up."
     )
     if booking_enabled():
-        message += "\n\nIf a live session is the faster route, use /meeting."
+        message += "\n\nIf a call would be faster, use /meeting."
     return message
 
 
@@ -2635,40 +2860,44 @@ def build_templates_markup() -> InlineKeyboardMarkup:
 def build_public_notice(ticket_id: int, link: str, mode: str | None = None) -> str:
     link = normalize_https_url(link)
     posted_at = build_public_posted_at_text(mode, link)
-    lines = [f"Your public answer for ticket #{ticket_id} has been posted.", f"Posted in: {posted_at}"]
+    lines = [f"Update for ticket #{ticket_id}", f"A public answer is now available in {posted_at}."]
     if link:
-        lines.append(f"Link: {link}")
+        lines.append("Use the button below to open it.")
     lines.extend(
         [
             "",
-            f"To continue this public ticket, send {public_followup_command(ticket_id)}.",
-            "You can keep using the same ticket until the mentor ends it.",
+            f"If you want to add more, send {public_followup_command(ticket_id)} followed by your update.",
         ]
     )
-    if booking_enabled():
-        lines.append(f"If a live session is better, use /meeting {ticket_id}.")
     return append_user_cta("\n".join(lines), ticket_id)
 
 
 def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mode: str | None = None) -> str:
     link = normalize_https_url(link)
     posted_at = build_public_posted_at_text(mode, link)
-    lines = [f"Public answer for ticket #{ticket_id}"]
-    lines.extend(["", f"Posted in: {posted_at}"])
+    lines = [f"Update for ticket #{ticket_id}", "", f"A public answer is now available in {posted_at}."]
     if answer_text:
         lines.extend(["", answer_text])
     if link:
-        lines.extend(["", f"Link: {link}"])
+        lines.extend(["", "Use the button below to open the published version."])
     lines.extend(
         [
             "",
-            f"To continue this public ticket, send {public_followup_command(ticket_id)}.",
-            "You can keep using the same ticket until the mentor ends it.",
+            f"If you want to add more, send {public_followup_command(ticket_id)} followed by your update.",
         ]
     )
-    if booking_enabled():
-        lines.append(f"If a live session is better, use /meeting {ticket_id}.")
     return append_user_cta("\n".join(lines), ticket_id)
+
+
+def build_public_answer_markup(ticket_id: int, submission: dict, link: str) -> InlineKeyboardMarkup | None:
+    buttons: list[InlineKeyboardButton] = []
+    public_link = normalize_https_url(link)
+    if public_link:
+        buttons.append(InlineKeyboardButton("Open public answer", url=public_link))
+    meeting_link = build_meeting_link(ticket_id, submission)
+    if meeting_link and not ticket_is_ended(submission):
+        buttons.append(InlineKeyboardButton("Book a meeting", url=meeting_link))
+    return build_inline_markup(buttons)
 
 
 def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
@@ -2838,60 +3067,46 @@ def format_submission(record: dict) -> str:
 
     if contact_visibility == "hidden":
         contact_lines = (
-            "Private contact\n"
-            "The requester chose to hide their display name, username, and Telegram ID in the admin view.\n"
+            "Admin-visible details\n"
+            "Private\n"
             "The bot still keeps the delivery route privately so replies can be sent."
         )
     else:
         username = f"@{user['username']}" if user.get("username") else "Not provided"
         contact_lines = (
-            "Private contact\n"
-            f"Display name: {user.get('display_name', 'Unknown user')}\n"
+            "Admin-visible details\n"
+            f"Name: {user.get('display_name', 'Unknown user')}\n"
             f"Username: {username}\n"
             f"Telegram ID: {user.get('id', 'Unknown')}"
         )
 
-    action_lines = [
-        "Admin actions",
-        f"/ticket {ticket_id}",
-        f"/todos {ticket_id}",
-        f"/todo {ticket_id} user follow_up_task",
-        f"/todo {ticket_id} admin internal_follow_up",
-        f"/note {ticket_id} internal context",
-        f"/reply {ticket_id} your private answer",
-        f"/endticket {ticket_id}",
-    ]
-    if booking_enabled():
-        action_lines.append(f"/sendmeeting {ticket_id}")
     suggested_template = suggest_quick_reply_template(request)
+    action_text = "Use the copy buttons below for the common ticket actions."
     if suggested_template:
-        action_lines.append(f"/quickreply {ticket_id} {suggested_template}")
-    if public_actions_allowed:
-        action_lines.append(f"/replypublic {ticket_id} your public answer")
-        action_lines.append(f"/markpublic {ticket_id} https://t.me/yourpost")
-    else:
-        action_lines.append("Public answer blocked for this ticket.")
-    action_text = "\n".join(action_lines)
+        action_text += f"\nSuggested quick reply: /quickreply {ticket_id} {suggested_template}"
+    if not public_actions_allowed:
+        action_text += "\nPublic answer is blocked for this ticket."
 
     return (
         f"Request Ticket #{ticket_id}\n\n"
         f"Submitted: {record.get('display_time', 'Unknown')}\n"
         f"Source: {format_source(record.get('source', 'guided_flow'))}\n"
         f"Status: {format_status(record.get('status', 'open'))}\n\n"
+        "Core request\n"
+        f"Question:\n{request['question']}\n\n"
+        f"Goal:\n{request['goal']}\n\n"
+        f"Blocker:\n{request['challenge']}\n\n"
+        f"Context:\n{request['context']}\n\n"
         f"{build_fast_read_section(request, ticket_id)}\n\n"
-        f"Reply policy\n{answer_mode_policy_text(request['answer_mode'])}\n\n"
-        f"{contact_lines}\n\n"
-        f"Request\n"
+        "Request details\n"
         f"Request type: {format_request_kind(request['request_kind'])}\n"
         f"Topic: {request['track']}\n"
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
-        f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
-        f"Contact in admin view: {format_contact_visibility(request['contact_visibility'])}\n\n"
-        f"Goal: {request['goal']}\n\n"
-        f"Challenge:\n{request['challenge']}\n\n"
-        f"Question:\n{request['question']}\n\n"
-        f"Context:\n{request['context']}\n\n"
+        f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n"
+        f"Details in admin view: {format_contact_visibility(request['contact_visibility'])}\n\n"
+        f"Reply policy\n{answer_mode_policy_text(request['answer_mode'])}\n\n"
+        f"{contact_lines}\n\n"
         f"Public preview\n{record.get('public_request', build_public_prompt(request))}\n\n"
         "Private bot thread\n"
         "Reply to this message to answer privately or continue the private conversation through the bot.\n\n"
@@ -2917,77 +3132,84 @@ def format_discussion_ticket(record: dict) -> str:
 
 def build_summary(payload: dict) -> str:
     request = normalize_payload(payload)
-    quality = assess_request_quality(request)
-    return (
-        "Review your request:\n\n"
-        f"Request type: {format_request_kind(request['request_kind'])}\n"
-        f"Topic: {request['track']}\n"
-        f"Stage: {request['level']}\n"
-        f"Urgency: {request['urgency']}\n"
-        f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n"
-        f"Reply policy: {answer_mode_policy_text(request['answer_mode'])}\n\n"
-        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
-        f"Best improvement: {quality['improvement']}\n\n"
-        f"Contact in admin view: {format_contact_visibility(request['contact_visibility'])}\n\n"
-        f"Goal:\n{request['goal']}\n\n"
-        f"Challenge:\n{request['challenge']}\n\n"
-        f"Question:\n{request['question']}\n\n"
-        f"Context:\n{request['context']}\n\n"
-        "Send Submit to deliver it, Restart to begin again, or Cancel to stop."
-    )
+    sections = [
+        ("Goal", request["goal"], {"Not provided"}),
+        ("Blocker", request["challenge"], {"Not provided"}),
+        ("Question", request["question"], set()),
+        ("Context", request["context"], {"No extra context"}),
+    ]
+
+    lines = [
+        "Before you send",
+        "",
+        f"Type: {format_request_kind(request['request_kind'])}",
+        f"Topic: {request['track']}",
+        f"Stage: {request['level']}",
+        f"Urgency: {request['urgency']}",
+        f"Reply: {format_answer_mode(request['answer_mode'])}",
+        f"Details: {format_contact_visibility(request['contact_visibility'])}",
+    ]
+
+    for title, value, placeholders in sections:
+        if value not in placeholders:
+            lines.extend(["", title, value])
+
+    lines.extend(["", "Use Submit to send, Restart to edit, or Cancel to stop."])
+    return "\n".join(lines)
+
+
+def build_user_status_markup(record: dict) -> InlineKeyboardMarkup | None:
+    ticket_id = int(record.get("id", 0))
+    buttons: list[InlineKeyboardButton] = []
+    public_response = latest_public_response(record)
+    public_link = normalize_https_url((public_response or {}).get("link", ""))
+    if public_link:
+        buttons.append(InlineKeyboardButton("Open public answer", url=public_link))
+    if booking_enabled() and not ticket_is_ended(record):
+        meeting_link = build_meeting_link(ticket_id, record)
+        if meeting_link:
+            buttons.append(InlineKeyboardButton("Book a meeting", url=meeting_link))
+    return build_inline_markup(buttons)
 
 
 def build_user_status(record: dict) -> str:
     request = normalize_payload(record.get("request", {}))
-    quality = assess_request_quality(request)
     ticket_id = int(record.get("id", 0))
     lines = [
         f"Ticket #{ticket_id}",
         f"Status: {format_status(record.get('status', 'open'))}",
         f"Submitted: {record.get('display_time', 'Unknown')}",
-        f"Request type: {format_request_kind(request.get('request_kind', 'mentorship'))}",
+        f"Type: {format_request_kind(request.get('request_kind', 'mentorship'))}",
         f"Topic: {request.get('track', 'General')}",
-        f"Requested reply mode: {format_answer_mode(request.get('answer_mode', 'private'))}",
-        f"Reply policy: {answer_mode_policy_text(request.get('answer_mode', 'private'))}",
-        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})",
-        f"Contact in admin view: {format_contact_visibility(request.get('contact_visibility', 'shown'))}",
+        f"Reply: {format_answer_mode(request.get('answer_mode', 'private'))}",
     ]
 
-    if allows_public_reply(request.get("answer_mode", "private")) and private_thread_enabled(record):
-        lines.append("Current route: Private reply in the bot")
-
-    responses = record.get("responses", [])
-    if responses:
-        latest = responses[-1]
-        public_mode = latest.get("mode")
-        if latest.get("mode") in {"public", "public_manual"} and latest.get("link"):
-            lines.append(f"Public link: {latest['link']}")
-        elif latest.get("mode") == "public_discussion" and latest.get("link"):
-            lines.append(f"Public link: {latest['link']}")
-        elif latest.get("mode") == "public_channel" and latest.get("link"):
-            lines.append(f"Public link: {latest['link']}")
-        if public_mode in {"public", "public_manual", "public_discussion", "public_channel"}:
-            lines.append(f"Posted in: {build_public_posted_at_text(public_mode, latest.get('link', ''))}")
-
-    if record.get("status") == "answered_public" and not responses:
-        lines.append(f"Posted in: {build_public_posted_at_text(None, '')}")
+    public_response = latest_public_response(record)
+    if public_response is not None:
+        public_link = normalize_https_url(public_response.get("link", ""))
+        lines.extend(
+            [
+                "",
+                f"A public answer is available in {build_public_posted_at_text(public_response.get('mode'), public_link)}.",
+            ]
+        )
+        if public_link:
+            lines.append("Use the button below to open it.")
+    elif record.get("status") == "answered_public":
+        lines.extend(["", f"A public answer was posted in {build_public_posted_at_text(None, '')}."])
 
     discussion = record.get("discussion", {})
     if discussion.get("message_id") and record.get("status") == "open" and not ticket_has_public_answer(record):
-        lines.append("Your anonymous public ticket is queued in the discussion group.")
+        lines.extend(["", "Your anonymous public request is queued in the discussion group."])
     user_todos_section = build_user_todos_section(record)
     if user_todos_section:
         lines.extend(["", user_todos_section])
     if ticket_is_ended(record):
-        lines.append("This ticket has been ended by the mentor.")
+        lines.extend(["", "This ticket is closed."])
     elif public_followup_enabled(record):
-        lines.append(f"Continue this public ticket with {public_followup_command(ticket_id)}.")
-        lines.append("Public tickets end automatically after 3 days without a follow-up.")
-    if booking_enabled() and not ticket_is_ended(record):
-        lines.append(f"Book a meeting for this case with /meeting {ticket_id}.")
-    if private_thread_enabled(record) and not ticket_is_ended(record):
-        lines.append("Reply to the private ticket thread in the bot to continue the same conversation.")
-        lines.append("After the latest private reply, the ticket ends automatically after 1 day without a reply.")
+        lines.extend(["", f"If you want to add more, send {public_followup_command(ticket_id)} followed by your update."])
+    elif private_thread_enabled(record):
+        lines.extend(["", "Reply in the private thread to continue this ticket."])
 
     return "\n".join(lines)
 
@@ -3014,6 +3236,7 @@ async def send_private_ticket_message(
     message_text: str,
     admin_message_id: int | None,
     direction: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> tuple[bool, str]:
     if ticket_is_ended(submission):
         return False, ended_ticket_message(ticket_id)
@@ -3043,6 +3266,7 @@ async def send_private_ticket_message(
             chat_id=user_id,
             text=message_text,
             reply_to_message_id=reply_target_message_id,
+            reply_markup=reply_markup,
             link_preview_options=NO_PREVIEW,
         )
     except TelegramError:
@@ -3385,7 +3609,6 @@ async def deliver_submission(
         return False
 
     record = build_submission_record(update.effective_user, payload, source)
-    quality = assess_request_quality(record["request"])
     discussion_group_id = context.application.bot_data.get("discussion_group_id")
     discussion_posted = False
 
@@ -3436,16 +3659,11 @@ async def deliver_submission(
         )
     user_confirmation_message = await update.message.reply_text(
         append_user_cta(
-            f"Your request has been sent.\n"
+            f"Request sent\n"
             f"Ticket: #{record['id']}\n"
-            f"Request type: {format_request_kind(record['request']['request_kind'])}\n"
-            f"Requested reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
-            f"Reply policy: {answer_mode_policy_text(record['request']['answer_mode'])}\n"
-            f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
-            f"Best improvement: {quality['improvement']}\n"
-            f"Contact in admin view: {format_contact_visibility(record['request']['contact_visibility'])}"
-            f"{public_note}\n"
-            "If you do not want channel news mirrored here, use /muteupdates. Use /resumeupdates any time to turn them back on.",
+            f"Type: {format_request_kind(record['request']['request_kind'])}\n"
+            f"Reply: {format_answer_mode(record['request']['answer_mode'])}"
+            f"{public_note}",
             record["id"],
             record,
         ),
@@ -3466,6 +3684,7 @@ async def notify_user_public_answer(
     context: ContextTypes.DEFAULT_TYPE,
     submission: dict,
     notice_text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
     source_chat_id: int | None = None,
     source_message_id: int | None = None,
 ) -> tuple[bool, str]:
@@ -3478,6 +3697,7 @@ async def notify_user_public_answer(
         await context.bot.send_message(
             chat_id=user_id,
             text=notice_text,
+            reply_markup=reply_markup,
             link_preview_options=NO_PREVIEW,
         )
     except TelegramError:
@@ -3508,13 +3728,19 @@ async def remember_private_user(update: Update, context: ContextTypes.DEFAULT_TY
 async def mute_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
+    if not feature_channel_updates_enabled():
+        await update.message.reply_text(
+            "Channel updates are not active here right now.",
+            reply_markup=build_keyboard(MAIN_MENU),
+        )
+        return
 
     remember_known_user(update.effective_user, updates_enabled=False)
     channel_url = cta_channel_url() or build_public_destination_text()
     await update.message.reply_text(
-        f"Channel updates in the bot are now paused for you.\n"
-        f"Follow directly here instead if you want: {channel_url}\n"
-        "Use /resumeupdates any time to receive channel news here again.",
+        "Channel updates are paused.\n"
+        f"You can still follow the channel here: {channel_url}\n"
+        "Use /resumeupdates whenever you want them back.",
         reply_markup=build_keyboard(MAIN_MENU),
         link_preview_options=NO_PREVIEW,
     )
@@ -3523,11 +3749,17 @@ async def mute_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def resume_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
+    if not feature_channel_updates_enabled():
+        await update.message.reply_text(
+            "Channel updates are not active here right now.",
+            reply_markup=build_keyboard(MAIN_MENU),
+        )
+        return
 
     remember_known_user(update.effective_user, updates_enabled=True)
     await update.message.reply_text(
-        "Channel updates in the bot are active again.\n"
-        "If you are not already in the public channel, new channel posts can now be mirrored here.",
+        "Channel updates are active again.\n"
+        "New channel posts can be mirrored here when available.",
         reply_markup=build_keyboard(MAIN_MENU),
         link_preview_options=NO_PREVIEW,
     )
@@ -3609,25 +3841,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await reply_with_optional_logo(
         update.message,
-        append_user_cta(
-            "Welcome to the request bot.\n"
-            f"Your request is routed to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
-            "This service is designed to stay practical, concise, and sustainable.\n\n"
-            "You can use it for mentorship, technical services, collaboration discussions, speaking invitations, or a custom request.\n\n"
-            f"{GUIDED_REQUEST_LABEL} classifies the request first, then helps you shape a stronger submission.\n"
-            f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n"
-            f"{BOOK_MEETING_LABEL} opens the Calendly link when a live session is the better use of time.\n\n"
-            f"{SERVICES_LABEL} opens the broader services page.\n"
-            f"{CONTACT_LABEL} routes direct collaboration or service requests.\n"
-            f"{WEBSITE_LABEL} opens the broader public site.\n"
-            "Use /profile for the public background snapshot.\n\n"
-            "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
-            "Before submitting, you can choose whether those details stay visible in the admin view.\n\n"
-            f"{PRIVATE_REPLY_LABEL} stays inside the bot and cannot be turned into a public answer later.\n"
-            f"{PUBLIC_ANSWER_LABEL} keeps your identity private and may still be answered privately if that is more useful.\n\n"
-            "If you are not already in the public channel, important channel updates can also arrive here.\n"
-            "Use /muteupdates to stop them or /resumeupdates to turn them back on."
-        ),
+        build_user_start_message(),
         build_keyboard(MAIN_MENU),
     )
 
@@ -3638,75 +3852,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
-            "/adminstatus shows the current admin.\n"
-            "/storagestatus shows whether the queue is on persistent storage.\n"
-            "/dashboard shows the current admin queue, checklist load, and reminder load.\n"
-            "/ticket <ticket> opens one ticket by ID, or by replying to an admin-side ticket message.\n"
-            "/tickets [queue|private|public|waiting_user|ended|all] [limit] lists compact slices of the queue.\n"
-            "/note <ticket> <text> saves internal context on a ticket.\n"
-            "/notes <ticket> shows the stored internal notes.\n"
-            "/todo <ticket> <admin|user> <task> adds a checklist item.\n"
-            "/todos <ticket> shows the ticket checklist.\n"
-            "/tododone <ticket> <todo_id> marks a checklist item done.\n"
-            "/todoundo <ticket> <todo_id> reopens a checklist item.\n"
-            "/todoremind <ticket> <todo_id> <30m|2h|3d|off> sets or clears a reminder.\n"
-            "New tickets are graded for readiness so specific cases rise to the top faster.\n"
-            "/templates lists the ready private reply templates.\n"
-            "Templates and tags use Telegram copy buttons for faster reuse.\n"
-            "/tags lists saved shortcuts like {{website}}.\n"
-            "/savetag stores a reusable reply tag.\n"
-            "/deletetag removes a saved reply tag.\n"
-            "/quickreply sends a template in one step.\n"
-            "/setdiscussion opens a private chat picker for the discussion group.\n"
-            "/discussionstatus shows the linked discussion group.\n"
-            "/setchannel opens a private chat picker for the public channel.\n"
-            "/channelstatus shows the public answer channel.\n"
-            "Normal posts from the public channel are mirrored to bot users who are not channel members.\n"
-            "/availability shows the public response-window message.\n"
-            "/contact, /website, /profile, and /services stay available as user-facing navigation shortcuts.\n"
-            "/meetingstatus shows the current Calendly setup.\n"
-            f"{PRIVATE_REPLY_LABEL} tickets are locked private and cannot be answered publicly.\n"
-            f"{PUBLIC_ANSWER_LABEL} tickets may still be answered privately when that is more useful.\n"
-            "After the latest private reply, a private ticket ends automatically after 1 day without a reply.\n"
-            "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n"
-            "/stats shows request counts.\n"
-            "Reply to a private ticket message to continue the private conversation through the bot.\n"
-            "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
-            "/sendmeeting <ticket> [note] sends a ticket-specific meeting invite.\n"
-            "/replypublic <ticket> <message> posts a public answer through the bot.\n"
-            "/markpublic <ticket> [link] marks a public answer.\n"
-            "/endticket <ticket> [note] ends a ticket and stops further replies.\n"
-            "/start refreshes the admin view.",
-            reply_markup=build_keyboard(ADMIN_MENU),
+            build_admin_help_message(),
+            reply_markup=build_admin_help_markup(),
             link_preview_options=NO_PREVIEW,
         )
         return
 
     await update.message.reply_text(
-        append_user_cta(
-            "This bot handles mentorship, technical service, research collaboration, speaking or workshop requests, and related custom questions.\n\n"
-            f"{GUIDED_REQUEST_LABEL} asks what kind of request this is first, then captures topic, stage, goal, blocker, and urgency.\n"
-            f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n"
-            f"{BOOK_MEETING_LABEL} opens the Calendly booking link if a live session is the fastest route.\n"
-            f"{SERVICES_LABEL} or /services opens the website services page for broader service context.\n"
-            f"{CONTACT_LABEL} or /contact opens the direct contact routes.\n"
-            f"{WEBSITE_LABEL} or /website opens the public website sections.\n"
-            "/profile opens the public profile snapshot and key public links.\n"
-            "More specific requests are graded as more answer-ready and usually get faster, cleaner replies.\n\n"
-            "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the admin or hide them in the admin view.\n\n"
-            f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
-            f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
-            "If your ticket is being handled privately in the bot, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
-            "If your ticket received a public answer, use /followup <ticket_number> <message> to continue it until the mentor ends that ticket.\n"
-            "After the latest private reply, a private ticket ends automatically after 1 day without a reply.\n"
-            "Public tickets end automatically after 3 days without a follow-up after the latest public answer.\n"
-            "If you are not in the public channel, important channel posts can also be mirrored here for you.\n"
-            "Use /muteupdates to stop those updates or /resumeupdates to turn them back on.\n"
-            f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
-            "Use /status <ticket_number> to check one of your ticket statuses.\n"
-            "Use /meeting or /meeting <ticket_number> to open the booking link when a live session is needed.\n"
-            "Use /cancel any time during the guided flow."
-        ),
+        build_user_help_message(),
         reply_markup=build_keyboard(MAIN_MENU),
         link_preview_options=NO_PREVIEW,
     )
@@ -4519,8 +4672,7 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         step_text(
             1,
             intake_total_steps("guided"),
-            "What kind of request is this?\n"
-            "This keeps mentorship, services, collaboration, and speaking requests routed cleanly.",
+            "What kind of request is this?",
         ),
         reply_markup=build_keyboard(REQUEST_KIND_MENU),
     )
@@ -4551,9 +4703,7 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         step_text(
             1,
             intake_total_steps("quick"),
-            "Send your question in one message.\n"
-            "Make it one clear question if possible so the mentor can answer faster.\n"
-            "You can use this for mentorship, services, collaboration, speaking, or your own topic.",
+            "Send your question in one message.\nOne clear question works best.",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -4598,8 +4748,7 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         step_text(
             2,
             intake_total_steps("quick"),
-            "What kind of request is this?\n"
-            "This sets the routing context without forcing the full guided intake.",
+            "What kind of request is this?",
         ),
         reply_markup=build_keyboard(REQUEST_KIND_MENU),
     )
@@ -4626,9 +4775,7 @@ async def capture_request_kind(update: Update, context: ContextTypes.DEFAULT_TYP
             step_text(
                 3,
                 intake_total_steps("quick"),
-                "How should the answer be delivered?\n"
-                "Private reply keeps the request and answer inside the bot.\n"
-                "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
+                "How should the answer be delivered?\nPrivate keeps it inside the bot. Public hides your identity.",
             ),
             reply_markup=build_keyboard(ANSWER_MODE_MENU),
         )
@@ -4638,9 +4785,9 @@ async def capture_request_kind(update: Update, context: ContextTypes.DEFAULT_TYP
         step_text(
             2,
             intake_total_steps("guided"),
-            build_track_prompt(normalized_kind),
+            "What is this about?\nReply in a few words or one short line.",
         ),
-        reply_markup=build_keyboard(track_menu_for_request_kind(normalized_kind)),
+        reply_markup=ReplyKeyboardRemove(),
     )
     return TRACK
 
@@ -4651,10 +4798,8 @@ async def capture_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     track = (update.message.text or "").strip()
     if not track:
-        request_kind = context.user_data.get("request", {}).get("request_kind", "other")
         await update.message.reply_text(
-            "Choose one of the suggested topics or write your own.",
-            reply_markup=build_keyboard(track_menu_for_request_kind(request_kind)),
+            "Please write a short topic for this request.",
         )
         return TRACK
 
@@ -4663,10 +4808,9 @@ async def capture_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         step_text(
             3,
             intake_total_steps("guided"),
-            "What stage are you at right now?\n"
-            "You can tap a suggestion or write your own stage.",
+            "What stage are you at right now?\nA short answer is enough.",
         ),
-        reply_markup=build_keyboard(LEVEL_MENU),
+        reply_markup=ReplyKeyboardRemove(),
     )
     return LEVEL
 
@@ -4678,8 +4822,7 @@ async def capture_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     level = (update.message.text or "").strip()
     if not level:
         await update.message.reply_text(
-            "Share your current stage so the answer matches where you are now.",
-            reply_markup=build_keyboard(LEVEL_MENU),
+            "Please share your current stage.",
         )
         return LEVEL
 
@@ -4688,8 +4831,7 @@ async def capture_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         step_text(
             4,
             intake_total_steps("guided"),
-            "What outcome are you trying to achieve?\n"
-            "State one concrete outcome so the mentor can focus on the result you want, not just the problem.",
+            "What outcome do you want from this?\nKeep it concrete.",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -4710,8 +4852,7 @@ async def capture_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         step_text(
             5,
             intake_total_steps("guided"),
-            "What is the main challenge or blocker right now?\n"
-            "Name the one main blocker so the mentor can avoid generic advice.",
+            "What is the main blocker right now?",
         )
     )
     return CHALLENGE
@@ -4731,8 +4872,7 @@ async def capture_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         step_text(
             6,
             intake_total_steps("guided"),
-            "Write your question as clearly as you can.\n"
-            "A single direct question usually gets a faster and more useful answer.",
+            "What is your main question?\nOne direct question works best.",
         )
     )
     return QUESTION
@@ -4752,9 +4892,7 @@ async def capture_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         step_text(
             7,
             intake_total_steps("guided"),
-            "Share any extra context, links, deadlines, or attempts so far.\n"
-            "Only include what matters for this case.\n"
-            f"If there is nothing else to add, send {SKIP_LABEL}.",
+            "Add any context, deadline, or attempt that matters.\nIf not, send Skip.",
         ),
         reply_markup=build_keyboard(SKIP_MENU),
     )
@@ -4773,8 +4911,7 @@ async def capture_context(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         step_text(
             8,
             intake_total_steps("guided"),
-            "How urgent is this request?\n"
-            "This helps the mentor prioritize the queue.",
+            "How urgent is this?",
         ),
         reply_markup=build_keyboard(URGENCY_MENU),
     )
@@ -4798,9 +4935,7 @@ async def capture_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         step_text(
             9,
             intake_total_steps("guided"),
-            "How should the answer be delivered?\n"
-            "Private reply keeps the request and answer inside the bot and cannot be switched to public later.\n"
-            "Public answer keeps your identity private and may still be answered privately if that is more useful.",
+            "How should the answer be delivered?\nPrivate keeps it in the bot. Public hides your identity.",
         ),
         reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
@@ -4871,8 +5006,7 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
         step_text(
             2,
             intake_total_steps("quick"),
-            "What kind of request is this?\n"
-            "This keeps the ticket searchable without forcing the full guided flow.",
+            "What kind of request is this?",
         ),
         reply_markup=build_keyboard(REQUEST_KIND_MENU),
     )
@@ -4945,7 +5079,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message_text = build_user_status(submission)
     if is_ticket_owner:
         message_text = append_user_cta(message_text, ticket_id, submission)
-    await update.message.reply_text(message_text, link_preview_options=NO_PREVIEW)
+    await update.message.reply_text(
+        message_text,
+        reply_markup=build_user_status_markup(submission),
+        link_preview_options=NO_PREVIEW,
+    )
 
 
 async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4956,14 +5094,14 @@ async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     link = cta_services_url()
     if not link:
         await update.message.reply_text(
-            build_services_message(),
+            build_services_message(admin_view),
             reply_markup=build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU),
             link_preview_options=NO_PREVIEW,
         )
         return
 
     await update.message.reply_text(
-        build_services_message(),
+        build_services_message(admin_view),
         reply_markup=build_services_markup(link),
         link_preview_options=NO_PREVIEW,
     )
@@ -4978,7 +5116,7 @@ async def contact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if reply_markup is None:
         reply_markup = build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU)
     await update.message.reply_text(
-        build_contact_message(),
+        build_contact_message(admin_view),
         reply_markup=reply_markup,
         link_preview_options=NO_PREVIEW,
     )
@@ -4993,7 +5131,7 @@ async def website_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if reply_markup is None:
         reply_markup = build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU)
     await update.message.reply_text(
-        build_website_message(),
+        build_website_message(admin_view),
         reply_markup=reply_markup,
         link_preview_options=NO_PREVIEW,
     )
@@ -5008,7 +5146,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if reply_markup is None:
         reply_markup = build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU)
     await update.message.reply_text(
-        build_profile_message(),
+        build_profile_message(admin_view),
         reply_markup=reply_markup,
         link_preview_options=NO_PREVIEW,
     )
@@ -5021,7 +5159,7 @@ async def meeting_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     admin_view = is_admin(context, update.effective_user.id)
     if not booking_enabled():
         await update.message.reply_text(
-            build_meeting_message(),
+            build_meeting_message(admin_view=admin_view),
             reply_markup=build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU),
             link_preview_options=NO_PREVIEW,
         )
@@ -5043,7 +5181,7 @@ async def meeting_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
     await update.message.reply_text(
-        build_meeting_message(ticket_id, submission),
+        build_meeting_message(ticket_id, submission, admin_view),
         reply_markup=build_meeting_markup(build_meeting_link(ticket_id, submission), ticket_id, admin_view),
         link_preview_options=NO_PREVIEW,
     )
@@ -5103,16 +5241,10 @@ async def send_meeting_invite(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
     meeting_link = extra_tags.get("meeting_link", "")
-    lines = [f"Meeting invitation for ticket #{ticket_id}", "", CALENDLY_TEXT]
+    lines = [f"Meeting for ticket #{ticket_id}", "", CALENDLY_TEXT]
     if meeting_note:
         lines.extend(["", meeting_note])
-    lines.extend(
-        [
-            "",
-            f"Book here: {meeting_link}",
-            f"If the booking form has notes, mention ticket #{ticket_id}.",
-        ]
-    )
+    lines.extend(["", f"If the booking form has notes, mention ticket #{ticket_id}."])
     message_text = apply_identity_signature("\n".join(lines), default_identity_visibility())
 
     sent, error_message = await send_private_ticket_message(
@@ -5122,6 +5254,7 @@ async def send_meeting_invite(update: Update, context: ContextTypes.DEFAULT_TYPE
         message_text,
         update.message.message_id,
         "mentor_to_user",
+        build_meeting_markup(meeting_link, ticket_id),
     )
     if not sent:
         await update.message.reply_text(error_message)
@@ -5488,6 +5621,10 @@ async def quick_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
+    reply_markup = None
+    if template_key == "meeting_invite":
+        reply_markup = build_meeting_markup(extra_tags.get("meeting_link", ""), ticket_id)
+
     sent, error_message = await send_private_ticket_message(
         context,
         submission,
@@ -5495,6 +5632,7 @@ async def quick_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"Private answer for ticket #{ticket_id}\n\n{reply_text}",
         update.message.message_id,
         "mentor_to_user",
+        reply_markup,
     )
     if not sent:
         await update.message.reply_text(error_message)
@@ -5666,11 +5804,13 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     user_id = submission.get("user", {}).get("id")
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link, response_mode)
+    notice_markup = build_public_answer_markup(ticket_id, submission, public_link)
 
     notified, error_message = await notify_user_public_answer(
         context,
         submission,
         notice_text,
+        notice_markup,
         public_chat_id,
         public_message_id,
     )
@@ -5745,11 +5885,13 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     notice_text = build_public_notice(ticket_id, public_link, "public_manual")
+    notice_markup = build_public_answer_markup(ticket_id, submission, public_link)
 
     notified, error_message = await notify_user_public_answer(
         context,
         submission,
         notice_text,
+        notice_markup,
     )
     if not notified:
         await update.message.reply_text(
@@ -5804,11 +5946,13 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
     public_link = getattr(update.message, "link", "") or ""
     public_link = normalize_https_url(public_link)
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link, "public_discussion")
+    notice_markup = build_public_answer_markup(ticket_id, submission, public_link)
 
     notified, error_message = await notify_user_public_answer(
         context,
         submission,
         notice_text,
+        notice_markup,
         update.effective_chat.id,
         update.message.message_id,
     )
