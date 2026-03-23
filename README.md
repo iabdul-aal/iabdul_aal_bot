@@ -73,3 +73,7 @@ railway up
 - Rotate the Telegram token before deploying because the current token was exposed.
 - Use a paid Railway plan if you want stronger 24/7 behavior. Free and Trial plans are more limited.
 - If you upgrade to a paid plan, set restart policy to `Always` in Railway.
+
+## License
+
+Creative Commons Attribution 4.0 International (`CC BY 4.0`).
