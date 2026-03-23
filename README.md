@@ -29,7 +29,6 @@ Set these in Railway:
 TELEGRAM_TOKEN=your_rotated_bot_token
 ADMIN_ID=
 PUBLIC_CHANNEL_URL=https://t.me/your_channel
-DATA_DIR=/app/data
 ```
 
 `ADMIN_ID` can stay empty at first. After deployment, open the bot in Telegram and send `/claimadmin` from your own account.
@@ -42,7 +41,7 @@ Create a Railway volume and mount it to:
 /app/data
 ```
 
-This keeps ticket history and admin state across restarts.
+This keeps ticket history and admin state across restarts. Railway automatically provides the mount path to the service, so you do not need to set `DATA_DIR` manually in Railway when a volume is attached.
 
 ### Deploy from GitHub
 
@@ -73,6 +72,12 @@ railway up
 - Rotate the Telegram token before deploying because the current token was exposed.
 - Use a paid Railway plan if you want stronger 24/7 behavior. Free and Trial plans are more limited.
 - If you upgrade to a paid plan, set restart policy to `Always` in Railway.
+
+### Free plan notes
+
+- Railway Free is `$0/month` and includes one service with `0.5 GB` RAM and `0.5 GB` volume storage.
+- On the Free plan, `Always` restart is not available. `On Failure` is limited to 10 restarts.
+- This is still the best free path for this bot because free Render services spin down on idle and free Render web services cannot attach persistent disk storage.
 
 ## License
 
