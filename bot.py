@@ -966,6 +966,25 @@ def build_public_destination_text() -> str:
     return " or ".join(destinations)
 
 
+def build_public_posted_at_text(mode: str | None, link: str = "") -> str:
+    normalized_link = normalize_https_url(link)
+    if mode == "public_discussion":
+        if DISCUSSION_GROUP_URL:
+            return f"discussion group: {DISCUSSION_GROUP_URL}"
+        if normalized_link:
+            return f"discussion group: {normalized_link}"
+        return "the linked discussion group"
+    if mode == "public_channel":
+        if PUBLIC_CHANNEL_URL:
+            return f"channel: {PUBLIC_CHANNEL_URL}"
+        if normalized_link:
+            return f"channel: {normalized_link}"
+        return "the linked public channel"
+    if normalized_link:
+        return normalized_link
+    return build_public_destination_text()
+
+
 def step_text(step: int, total: int, body: str) -> str:
     return f"Step {step}/{total}\n{body}"
 
@@ -1292,25 +1311,24 @@ def build_templates_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(chunk_items(buttons, 2))
 
 
-def build_public_notice(ticket_id: int, link: str) -> str:
+def build_public_notice(ticket_id: int, link: str, mode: str | None = None) -> str:
     link = normalize_https_url(link)
+    posted_at = build_public_posted_at_text(mode, link)
+    lines = [f"Your public answer for ticket #{ticket_id} has been posted.", f"Posted in: {posted_at}"]
     if link:
-        return f"Your public answer for ticket #{ticket_id} is ready:\n{link}"
-    return (
-        f"Your public answer for ticket #{ticket_id} has been posted.\n"
-        f"Check {build_public_destination_text()}."
-    )
+        lines.append(f"Link: {link}")
+    return "\n".join(lines)
 
 
-def build_public_answer_message(ticket_id: int, answer_text: str, link: str) -> str:
+def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mode: str | None = None) -> str:
     link = normalize_https_url(link)
+    posted_at = build_public_posted_at_text(mode, link)
     lines = [f"Public answer for ticket #{ticket_id}"]
+    lines.extend(["", f"Posted in: {posted_at}"])
     if answer_text:
         lines.extend(["", answer_text])
     if link:
         lines.extend(["", f"Link: {link}"])
-    elif DISCUSSION_GROUP_URL or PUBLIC_CHANNEL_URL:
-        lines.extend(["", f"Open: {build_public_destination_text()}"])
     return "\n".join(lines)
 
 
@@ -1574,21 +1592,18 @@ def build_user_status(record: dict) -> str:
     responses = record.get("responses", [])
     if responses:
         latest = responses[-1]
+        public_mode = latest.get("mode")
         if latest.get("mode") in {"public", "public_manual"} and latest.get("link"):
             lines.append(f"Public link: {latest['link']}")
         elif latest.get("mode") == "public_discussion" and latest.get("link"):
             lines.append(f"Public link: {latest['link']}")
         elif latest.get("mode") == "public_channel" and latest.get("link"):
             lines.append(f"Public link: {latest['link']}")
-        elif latest.get("mode") in {"public", "public_manual"} and DISCUSSION_GROUP_URL:
-            lines.append(f"Discussion group: {DISCUSSION_GROUP_URL}")
-        elif latest.get("mode") == "public_discussion" and DISCUSSION_GROUP_URL:
-            lines.append(f"Discussion group: {DISCUSSION_GROUP_URL}")
-        elif latest.get("mode") == "public_channel" and PUBLIC_CHANNEL_URL:
-            lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
+        if public_mode in {"public", "public_manual", "public_discussion", "public_channel"}:
+            lines.append(f"Posted in: {build_public_posted_at_text(public_mode, latest.get('link', ''))}")
 
-    if record.get("status") == "answered_public" and PUBLIC_CHANNEL_URL and not responses:
-        lines.append(f"Channel: {PUBLIC_CHANNEL_URL}")
+    if record.get("status") == "answered_public" and not responses:
+        lines.append(f"Posted in: {build_public_posted_at_text(None, '')}")
 
     discussion = record.get("discussion", {})
     if discussion.get("message_id") and record.get("status") == "open":
@@ -3012,7 +3027,7 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
     public_link = normalize_https_url(public_link)
 
     user_id = submission.get("user", {}).get("id")
-    notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
+    notice_text = build_public_answer_message(ticket_id, answer_text, public_link, response_mode)
 
     try:
         await context.bot.send_message(
@@ -3087,7 +3102,7 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_id = submission.get("user", {}).get("id")
-    notice_text = build_public_notice(ticket_id, public_link)
+    notice_text = build_public_notice(ticket_id, public_link, "public_manual")
 
     try:
         await context.bot.send_message(
@@ -3146,7 +3161,7 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
     user_id = submission.get("user", {}).get("id")
     public_link = getattr(update.message, "link", "") or ""
     public_link = normalize_https_url(public_link)
-    notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
+    notice_text = build_public_answer_message(ticket_id, answer_text, public_link, "public_discussion")
 
     try:
         await context.bot.send_message(
