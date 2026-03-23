@@ -45,6 +45,7 @@ If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP
 If you use a channel for public answers, leave `PUBLIC_CHANNEL_ID` empty and run `/setchannel` inside that channel.
 
 The bot must be an admin in any discussion group or channel it should post to.
+The configured admin account must also be an admin there, even if Telegram sends the command as the channel itself.
 
 ## Public and private behavior
 

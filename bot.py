@@ -189,6 +189,27 @@ def is_discussion_group(context: ContextTypes.DEFAULT_TYPE, chat_id: int | None)
     return discussion_group_id is not None and chat_id == discussion_group_id
 
 
+async def admin_can_manage_chat(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_id: int | None,
+) -> bool:
+    if is_admin(context, user_id):
+        return True
+
+    admin_id = context.application.bot_data.get("admin_id")
+    if admin_id is None:
+        return False
+
+    try:
+        admin_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=admin_id)
+    except TelegramError:
+        logger.exception("Failed to verify configured admin access for chat %s", chat_id)
+        return False
+
+    return admin_member.status in {"administrator", "creator"}
+
+
 def _read_submissions_unlocked() -> list[dict]:
     ensure_data_dir()
     if not SUBMISSIONS_FILE.exists():
@@ -735,17 +756,19 @@ async def set_discussion_group(update: Update, context: ContextTypes.DEFAULT_TYP
     if message is None or update.effective_chat is None:
         return
 
-    if update.effective_user is None:
-        await message.reply_text("Run /setdiscussion from your admin account, not anonymously.")
-        return
-
-    if not is_admin(context, update.effective_user.id):
-        await message.reply_text("This command is available only to the admin.")
-        return
-
     if update.effective_chat.type not in {"group", "supergroup"}:
         await message.reply_text(
             "Open the linked discussion group and run /setdiscussion there."
+        )
+        return
+
+    if not await admin_can_manage_chat(
+        context,
+        update.effective_chat.id,
+        update.effective_user.id if update.effective_user else None,
+    ):
+        await message.reply_text(
+            "This command is available only to the configured admin or from a chat that admin already manages."
         )
         return
 
@@ -776,16 +799,18 @@ async def set_public_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if message is None or update.effective_chat is None:
         return
 
-    if update.effective_user is None:
-        await message.reply_text("Run /setchannel from your admin account, not as the channel.")
-        return
-
-    if not is_admin(context, update.effective_user.id):
-        await message.reply_text("This command is available only to the admin.")
-        return
-
     if update.effective_chat.type != "channel":
         await message.reply_text("Open the public channel and run /setchannel there.")
+        return
+
+    if not await admin_can_manage_chat(
+        context,
+        update.effective_chat.id,
+        update.effective_user.id if update.effective_user else None,
+    ):
+        await message.reply_text(
+            "This command is available only to the configured admin or from a channel that admin already manages."
+        )
         return
 
     public_channel_id = update.effective_chat.id
