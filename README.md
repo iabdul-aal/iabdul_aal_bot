@@ -36,6 +36,7 @@ ADMIN_ID=
 MENTOR_LABEL=your mentor
 MENTOR_IDENTITY_TEXT=
 MENTOR_IDENTITY_DEFAULT=hidden
+REQUIRE_PERSISTENT_STORAGE=
 MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
 TAG_WEBSITE=
 TAG_BOOKING=
@@ -57,6 +58,10 @@ If you use a channel for public answers, leave `PUBLIC_CHANNEL_ID` empty and run
 The bot must be an admin in any discussion group or channel it should post to.
 The configured admin account must also be an admin there so Telegram can offer that chat in the picker.
 
+On Railway, queue persistence requires a Railway Volume mounted to `/app/data` if you keep the default relative `./data` storage path.
+The bot now refuses to start on Railway if persistent storage is required but no mounted volume is detected.
+If you intentionally want disposable storage for a temporary environment, set `REQUIRE_PERSISTENT_STORAGE=false`.
+
 ## Public and private behavior
 
 - Private reply keeps the request and answer inside the bot.
@@ -70,6 +75,7 @@ The configured admin account must also be an admin there so Telegram can offer t
 
 ## Admin workflow
 
+- `/storagestatus` shows whether the queue is on persistent storage and how many tickets are currently on disk.
 - `/dashboard` shows what is waiting on you, what is waiting on the user, and your current response-window message.
 - New tickets include a fast-read section with the main ask, outcome, blocker, readiness grade, and the fastest suggested reply path.
 - `/templates` lists concise ready replies for common situations.
@@ -93,6 +99,9 @@ Create a Railway volume and mount it to:
 ```
 
 This keeps ticket history and admin state across restarts.
+
+After deploy, run `/storagestatus` from the admin chat.
+You should see `Storage mode: railway_volume` before relying on the queue across commits and redeploys.
 
 ## Verification
 

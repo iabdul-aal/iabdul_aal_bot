@@ -36,6 +36,7 @@ ADMIN_ID=
 MENTOR_LABEL=your mentor
 MENTOR_IDENTITY_TEXT=
 MENTOR_IDENTITY_DEFAULT=hidden
+REQUIRE_PERSISTENT_STORAGE=
 MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
 TAG_WEBSITE=
 TAG_BOOKING=
@@ -77,12 +78,13 @@ python bot.py
 5. Submit a private mentorship ticket.
 6. Submit a public mentorship ticket.
 7. Test `/dashboard`, `/templates`, `/tags`, `/quickreply`, `/reply`, `/replypublic`, `/markpublic`, and `/status`.
-8. Confirm a private-mode ticket cannot be closed publicly through `/replypublic`, `/markpublic`, or a discussion reply.
-9. Confirm a public-mode ticket can still receive a private reply and continue through bot-thread replies.
-10. Confirm new tickets show a readiness grade and fast-read section for the admin.
-11. Confirm template and tag screens expose Telegram copy buttons for quick reuse.
-12. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
-13. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+8. Run `/storagestatus` and confirm Railway shows `railway_volume` before trusting queue persistence across deploys.
+9. Confirm a private-mode ticket cannot be closed publicly through `/replypublic`, `/markpublic`, or a discussion reply.
+10. Confirm a public-mode ticket can still receive a private reply and continue through bot-thread replies.
+11. Confirm new tickets show a readiness grade and fast-read section for the admin.
+12. Confirm template and tag screens expose Telegram copy buttons for quick reuse.
+13. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
+14. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
 
 ## Git workflow
 

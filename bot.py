@@ -64,6 +64,7 @@ ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
 MENTOR_LABEL = (os.getenv("MENTOR_LABEL") or DEFAULT_MENTOR_LABEL).strip()
 MENTOR_IDENTITY_TEXT = (os.getenv("MENTOR_IDENTITY_TEXT") or "").strip()
 MENTOR_IDENTITY_DEFAULT = (os.getenv("MENTOR_IDENTITY_DEFAULT") or "hidden").strip().lower()
+REQUIRE_PERSISTENT_STORAGE_RAW = (os.getenv("REQUIRE_PERSISTENT_STORAGE") or "").strip().lower()
 MENTOR_AVAILABILITY_TEXT = (
     os.getenv("MENTOR_AVAILABILITY_TEXT")
     or "Replies are handled in planned batches. High urgency means time-sensitive, not instant."
@@ -72,9 +73,11 @@ PUBLIC_CHANNEL_URL = normalize_https_url(os.getenv("PUBLIC_CHANNEL_URL") or "")
 DISCUSSION_GROUP_URL = normalize_https_url(os.getenv("DISCUSSION_GROUP_URL") or "")
 DISCUSSION_GROUP_ID_RAW = (os.getenv("DISCUSSION_GROUP_ID") or "").strip()
 PUBLIC_CHANNEL_ID_RAW = (os.getenv("PUBLIC_CHANNEL_ID") or "").strip()
+RAILWAY_VOLUME_MOUNT_PATH = (os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "").strip()
+RAILWAY_VOLUME_NAME = (os.getenv("RAILWAY_VOLUME_NAME") or "").strip()
 DATA_DIR = Path(
     os.getenv("DATA_DIR")
-    or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    or RAILWAY_VOLUME_MOUNT_PATH
     or Path(__file__).with_name("data")
 )
 ADMIN_FILE = DATA_DIR / "admin_id.txt"
@@ -153,6 +156,7 @@ SETUP_COMMANDS = USER_COMMANDS + [
 
 ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("adminstatus", "Show the current admin ID"),
+    BotCommand("storagestatus", "Show queue storage status"),
     BotCommand("dashboard", "Show the mentor dashboard"),
     BotCommand("templates", "List ready reply templates"),
     BotCommand("tags", "List available saved tags"),
@@ -270,6 +274,12 @@ def build_copy_button(label: str, value: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(label, copy_text=CopyTextButton(text))
 
 
+def env_flag(value: str, default: bool) -> bool:
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -371,6 +381,96 @@ def get_public_channel_id() -> int | None:
 
 def save_public_channel_id(public_channel_id: int) -> None:
     save_numeric_id(PUBLIC_CHANNEL_FILE, public_channel_id)
+
+
+def is_running_on_railway() -> bool:
+    return any(
+        os.getenv(name)
+        for name in (
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_ENVIRONMENT_ID",
+            "RAILWAY_DEPLOYMENT_ID",
+        )
+    )
+
+
+def data_dir_is_under(path: Path, parent: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+        resolved_parent = parent.resolve()
+    except OSError:
+        return False
+    return resolved_path == resolved_parent or resolved_parent in resolved_path.parents
+
+
+def storage_mode() -> str:
+    if RAILWAY_VOLUME_MOUNT_PATH and data_dir_is_under(DATA_DIR, Path(RAILWAY_VOLUME_MOUNT_PATH)):
+        return "railway_volume"
+    if is_running_on_railway():
+        return "railway_ephemeral"
+    return "local_filesystem"
+
+
+def require_persistent_storage() -> bool:
+    return env_flag(REQUIRE_PERSISTENT_STORAGE_RAW, is_running_on_railway())
+
+
+def build_storage_status_message() -> str:
+    mode = storage_mode()
+    queue_count = len(read_submissions())
+    lines = [
+        "Storage status",
+        "",
+        f"Data directory: {DATA_DIR}",
+        f"Storage mode: {mode}",
+        f"Running on Railway: {'yes' if is_running_on_railway() else 'no'}",
+        f"Persistent storage required: {'yes' if require_persistent_storage() else 'no'}",
+        f"Queued tickets on disk: {queue_count}",
+    ]
+    if RAILWAY_VOLUME_MOUNT_PATH:
+        lines.append(f"Railway volume mount path: {RAILWAY_VOLUME_MOUNT_PATH}")
+    if RAILWAY_VOLUME_NAME:
+        lines.append(f"Railway volume name: {RAILWAY_VOLUME_NAME}")
+
+    if mode == "railway_volume":
+        lines.extend(
+            [
+                "",
+                "Queue storage is on a Railway Volume and should survive redeploys.",
+            ]
+        )
+    elif mode == "railway_ephemeral":
+        lines.extend(
+            [
+                "",
+                "Warning: this deployment is using ephemeral filesystem storage.",
+                "A new deploy can reset the queue and break replies to older tickets.",
+                "Attach a Railway Volume and mount it to /app/data, or point DATA_DIR at the mounted volume path.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Queue storage is using the local filesystem for this environment.",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def validate_storage_configuration() -> None:
+    ensure_data_dir()
+    mode = storage_mode()
+    logger.info("Queue storage path: %s", DATA_DIR)
+    logger.info("Queue storage mode: %s", mode)
+    if require_persistent_storage() and mode == "railway_ephemeral":
+        raise RuntimeError(
+            "Persistent queue storage is not configured for Railway.\n"
+            "Attach a Railway Volume and mount it to /app/data, or set DATA_DIR to the mounted volume path.\n"
+            "If you intentionally want ephemeral storage, set REQUIRE_PERSISTENT_STORAGE=false."
+        )
 
 
 async def sync_commands(application: Application) -> None:
@@ -1747,6 +1847,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
             "/adminstatus shows the current admin.\n"
+            "/storagestatus shows whether the queue is on persistent storage.\n"
             "/dashboard shows the current mentor queue and reply slots.\n"
             "New tickets are graded for readiness so specific cases rise to the top faster.\n"
             "/templates lists the ready private reply templates.\n"
@@ -1810,7 +1911,7 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Admin saved successfully.\n"
         "The mentorship bot is ready to receive requests.\n"
         "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.\n"
-        "Use /dashboard to keep the queue under control, /templates for fast replies, and /tags for saved shortcuts.",
+        "Use /storagestatus to confirm queue persistence, /dashboard to keep the queue under control, /templates for fast replies, and /tags for saved shortcuts.",
         reply_markup=build_keyboard(ADMIN_MENU),
     )
 
@@ -1825,6 +1926,21 @@ async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     await update.message.reply_text(f"Current admin ID: {admin_id}")
+
+
+async def storage_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    await update.message.reply_text(
+        build_storage_status_message(),
+        reply_markup=build_keyboard(ADMIN_MENU),
+        link_preview_options=NO_PREVIEW,
+    )
 
 
 async def set_discussion_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3086,6 +3202,7 @@ def main() -> None:
             "TELEGRAM_TOKEN is missing. Set it in Railway Variables for deployment or in the local .env file."
         )
 
+    validate_storage_configuration()
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     guided_request_pattern = rf"^{re.escape(GUIDED_REQUEST_LABEL)}$"
@@ -3145,6 +3262,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("claimadmin", claim_admin))
     app.add_handler(CommandHandler("adminstatus", admin_status))
+    app.add_handler(CommandHandler("storagestatus", storage_status))
     app.add_handler(CommandHandler("dashboard", dashboard_command))
     app.add_handler(CommandHandler("templates", templates_command))
     app.add_handler(CommandHandler("tags", tags_command))
