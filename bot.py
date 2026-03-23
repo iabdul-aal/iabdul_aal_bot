@@ -571,6 +571,99 @@ def format_answer_mode(value: str) -> str:
     return PUBLIC_ANSWER_LABEL if normalize_answer_mode(value) == "public" else PRIVATE_REPLY_LABEL
 
 
+def allows_public_reply(value: str) -> bool:
+    return normalize_answer_mode(value) == "public"
+
+
+def answer_mode_policy_text(value: str) -> str:
+    if allows_public_reply(value):
+        return "Public allowed. You may answer publicly or switch to a private reply if that is more useful."
+    return "Private only. This ticket cannot be turned into a public answer."
+
+
+def answer_mode_policy_short(value: str) -> str:
+    return "Public flexible" if allows_public_reply(value) else "Private only"
+
+
+def suggest_quick_reply_template(request: dict) -> str | None:
+    track = request.get("track", "").lower()
+    combined_text = " ".join(
+        [
+            request.get("track", ""),
+            request.get("goal", ""),
+            request.get("challenge", ""),
+            request.get("question", ""),
+            request.get("context", ""),
+        ]
+    ).lower()
+    if request.get("goal") == "Not provided" or request.get("question") == "Not provided":
+        return "need_context"
+    if request.get("context") == "No extra context":
+        return "need_context"
+    if len(request.get("question", "")) > 220 or request.get("question", "").count("?") > 1:
+        return "narrow_scope"
+    if "startup" in track or "startup" in combined_text:
+        return "startup_focus"
+    if "career" in track or any(keyword in combined_text for keyword in ["cv", "resume", "linkedin", "job"]):
+        return "career_next"
+    return None
+
+
+def build_fast_route_hint(request: dict) -> str:
+    if request.get("goal") == "Not provided" and request.get("challenge") == "Not provided":
+        return "Ask for one target outcome and one main blocker before going deeper."
+    if request.get("question") == "Not provided":
+        return "Ask the user to send one direct question."
+    if request.get("context") == "No extra context":
+        return "Keep the reply short or ask for one missing detail only."
+    if request.get("urgency") == "High":
+        return "Lead with the next concrete step first, then add only essential explanation."
+    if len(request.get("question", "")) > 220 or request.get("question", "").count("?") > 1:
+        return "Narrow the answer to the main decision or the first next step."
+    return "Enough detail is present for a direct, focused answer."
+
+
+def build_fast_read_section(request: dict, ticket_id: int | str) -> str:
+    template_key = suggest_quick_reply_template(request)
+    template_line = (
+        f"Suggested quick reply: /quickreply {ticket_id} {template_key}"
+        if template_key
+        else "Suggested quick reply: answer directly"
+    )
+    return (
+        "Fast read\n"
+        f"Main ask: {trim_text(request['question'], 180)}\n"
+        f"Wanted outcome: {trim_text(request['goal'], 140)}\n"
+        f"Main blocker: {trim_text(request['challenge'], 140)}\n"
+        f"Fastest route: {build_fast_route_hint(request)}\n"
+        f"{template_line}"
+    )
+
+
+def public_reply_block_message(ticket_id: int) -> str:
+    return (
+        f"Ticket #{ticket_id} is locked to private replies because the user selected {PRIVATE_REPLY_LABEL}.\n"
+        "Use /reply or reply to the private bot thread instead."
+    )
+
+
+def private_thread_enabled(submission: dict) -> bool:
+    request = normalize_payload(submission.get("request", {}))
+    if not allows_public_reply(request.get("answer_mode", "private")):
+        return True
+
+    if submission.get("status") == "answered_private":
+        return True
+
+    for response in submission.get("responses", []):
+        if response.get("mode") in {"private", "private_thread"}:
+            return True
+        if response.get("direction") in {"mentor_to_user", "user_to_mentor"}:
+            return True
+
+    return False
+
+
 def normalize_contact_visibility(value: str) -> str:
     lowered = (value or "").strip().lower()
     if lowered in {"hide", "hidden", HIDE_CONTACT_LABEL.lower()}:
@@ -840,7 +933,10 @@ def format_age_short(value: str | None) -> str:
 
 def classify_queue_state(submission: dict) -> str:
     request = normalize_payload(submission.get("request", {}))
-    if request.get("answer_mode") == "public":
+    if submission.get("status") == "answered_public":
+        return "done_public"
+
+    if allows_public_reply(request.get("answer_mode", "private")) and not private_thread_enabled(submission):
         return "awaiting_public" if submission.get("status") == "open" else "done_public"
 
     responses = submission.get("responses", [])
@@ -898,9 +994,10 @@ def build_dashboard_message(submissions: list[dict]) -> str:
     preview_lines = []
     for submission in waiting_on_you[:6]:
         request = normalize_payload(submission.get("request", {}))
-        mode_label = "Private" if request.get("answer_mode") == "private" else "Public"
         preview_lines.append(
-            f"#{submission['id']} | {mode_label} | {request['urgency']} | {trim_text(request['track'], 28)} | {format_age_short(submission.get('created_at'))}"
+            f"#{submission['id']} | {answer_mode_policy_short(request.get('answer_mode', 'private'))} | "
+            f"{request['urgency']} | {trim_text(request['track'], 20)} | "
+            f"{trim_text(request['question'], 52)} | {format_age_short(submission.get('created_at'))}"
         )
 
     preview_text = "\n".join(preview_lines) if preview_lines else "No tickets currently waiting on you."
@@ -985,10 +1082,6 @@ def find_submission_by_discussion_message(
 
 
 def resolve_private_thread_context(submission: dict, chat_id: int, message_id: int) -> dict | None:
-    request = normalize_payload(submission.get("request", {}))
-    if request.get("answer_mode") != "private":
-        return None
-
     thread = submission.get("private_thread", {})
     responses = submission.get("responses", [])
     admin_chat_id = thread.get("admin_chat_id")
@@ -1010,6 +1103,9 @@ def resolve_private_thread_context(submission: dict, chat_id: int, message_id: i
                     "remote_chat_id": user_chat_id,
                     "remote_reply_to_message_id": response.get("user_message_id") or user_root_message_id,
                 }
+
+    if not private_thread_enabled(submission):
+        return None
 
     if chat_id == user_chat_id:
         if message_id == user_root_message_id:
@@ -1092,6 +1188,7 @@ def format_submission(record: dict) -> str:
     request = normalize_payload(record.get("request", {}))
     ticket_id = record.get("id", "Unknown")
     contact_visibility = normalize_contact_visibility(request.get("contact_visibility", "shown"))
+    public_actions_allowed = allows_public_reply(request.get("answer_mode", "private"))
 
     if contact_visibility == "hidden":
         contact_lines = (
@@ -1108,17 +1205,33 @@ def format_submission(record: dict) -> str:
             f"Telegram ID: {user.get('id', 'Unknown')}"
         )
 
+    action_lines = [
+        "Admin actions",
+        f"/reply {ticket_id} your private answer",
+    ]
+    suggested_template = suggest_quick_reply_template(request)
+    if suggested_template:
+        action_lines.append(f"/quickreply {ticket_id} {suggested_template}")
+    if public_actions_allowed:
+        action_lines.append(f"/replypublic {ticket_id} your public answer")
+        action_lines.append(f"/markpublic {ticket_id} https://t.me/yourpost")
+    else:
+        action_lines.append("Public answer blocked for this ticket.")
+    action_text = "\n".join(action_lines)
+
     return (
         f"Mentorship Ticket #{ticket_id}\n\n"
         f"Submitted: {record.get('display_time', 'Unknown')}\n"
         f"Source: {format_source(record.get('source', 'guided_flow'))}\n"
         f"Status: {format_status(record.get('status', 'open'))}\n\n"
+        f"{build_fast_read_section(request, ticket_id)}\n\n"
+        f"Reply policy\n{answer_mode_policy_text(request['answer_mode'])}\n\n"
         f"{contact_lines}\n\n"
         f"Request\n"
         f"Topic: {request['track']}\n"
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
-        f"Reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
+        f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
         f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal: {request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
@@ -1127,10 +1240,7 @@ def format_submission(record: dict) -> str:
         f"Public preview\n{record.get('public_request', build_public_prompt(request))}\n\n"
         "Private bot thread\n"
         "Reply to this message to answer privately or continue the private conversation through the bot.\n\n"
-        f"Admin actions\n"
-        f"/reply {ticket_id} your private answer\n"
-        f"/replypublic {ticket_id} your public answer\n"
-        f"/markpublic {ticket_id} https://t.me/yourpost"
+        f"{action_text}"
     )
 
 
@@ -1155,7 +1265,8 @@ def build_summary(payload: dict) -> str:
         f"Topic: {request['track']}\n"
         f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
-        f"Reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
+        f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n"
+        f"Reply policy: {answer_mode_policy_text(request['answer_mode'])}\n\n"
         f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal:\n{request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
@@ -1172,9 +1283,13 @@ def build_user_status(record: dict) -> str:
         f"Status: {format_status(record.get('status', 'open'))}",
         f"Submitted: {record.get('display_time', 'Unknown')}",
         f"Topic: {request.get('track', 'General')}",
-        f"Reply mode: {format_answer_mode(request.get('answer_mode', 'private'))}",
+        f"Requested reply mode: {format_answer_mode(request.get('answer_mode', 'private'))}",
+        f"Reply policy: {answer_mode_policy_text(request.get('answer_mode', 'private'))}",
         f"Contact in mentor view: {format_contact_visibility(request.get('contact_visibility', 'shown'))}",
     ]
+
+    if allows_public_reply(request.get("answer_mode", "private")) and private_thread_enabled(record):
+        lines.append("Current route: Private reply in the bot")
 
     responses = record.get("responses", [])
     if responses:
@@ -1198,7 +1313,7 @@ def build_user_status(record: dict) -> str:
     discussion = record.get("discussion", {})
     if discussion.get("message_id") and record.get("status") == "open":
         lines.append("Your anonymous public ticket is queued in the discussion group.")
-    if request.get("answer_mode") == "private":
+    if private_thread_enabled(record):
         lines.append("Reply to the private ticket thread in the bot to continue the same conversation.")
 
     return "\n".join(lines)
@@ -1230,6 +1345,13 @@ async def send_private_ticket_message(
     user_id = submission.get("user", {}).get("id")
     if user_id is None:
         return False, "I could not find the Telegram user for this ticket."
+
+    request = normalize_payload(submission.get("request", {}))
+    if allows_public_reply(request.get("answer_mode", "private")) and not private_thread_enabled(submission):
+        message_text = (
+            f"{message_text}\n\n"
+            "Reply to this message if you want to continue privately in the bot."
+        )
 
     reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
     try:
@@ -1377,7 +1499,8 @@ async def deliver_submission(
     user_confirmation_message = await update.message.reply_text(
         f"Your mentorship request has been sent.\n"
         f"Ticket: #{record['id']}\n"
-        f"Reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
+        f"Requested reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
+        f"Reply policy: {answer_mode_policy_text(record['request']['answer_mode'])}\n"
         f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
         f"{public_note}",
         reply_markup=build_keyboard(MAIN_MENU),
@@ -1420,8 +1543,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n\n"
         "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
         "Before submitting, you can choose whether those details stay visible in the mentor view.\n\n"
-        f"{PRIVATE_REPLY_LABEL} stays inside the bot.\n"
-        f"{PUBLIC_ANSWER_LABEL} keeps your identity private and only shares a minimal anonymous version if needed.",
+        f"{PRIVATE_REPLY_LABEL} stays inside the bot and cannot be turned into a public answer later.\n"
+        f"{PUBLIC_ANSWER_LABEL} keeps your identity private and may still be answered privately if that is more useful.",
         reply_markup=build_keyboard(MAIN_MENU),
     )
 
@@ -1444,6 +1567,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/setchannel opens a private chat picker for the public channel.\n"
             "/channelstatus shows the public answer channel.\n"
             "/availability shows the public response-window message.\n"
+            f"{PRIVATE_REPLY_LABEL} tickets are locked private and cannot be answered publicly.\n"
+            f"{PUBLIC_ANSWER_LABEL} tickets may still be answered privately when that is more useful.\n"
             "/stats shows mentorship request counts.\n"
             "Reply to a private ticket message to continue the private conversation through the bot.\n"
             "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
@@ -1457,11 +1582,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
         f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
-        f"{QUICK_QUESTION_LABEL} is the fastest path if you already know what you want to ask.\n\n"
+        f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n\n"
         "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
-        f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot.\n"
-        f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version.\n"
-        "For private tickets, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
+        f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
+        f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
+        "If your ticket is being handled privately in the bot, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
         f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
         "Use /status <ticket_number> to check one of your ticket statuses.\n"
         "Use /cancel any time during the guided flow.",
@@ -1943,6 +2068,7 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             1,
             3,
             "Send your question in one message.\n"
+            "Make it one clear question if possible so the mentor can answer faster.\n"
             "You can ask about research direction, technical guidance, project review, academic growth, career, startup ideas, or your own topic.",
         ),
         reply_markup=ReplyKeyboardRemove(),
@@ -2039,7 +2165,7 @@ async def capture_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             3,
             9,
             "What outcome are you trying to achieve?\n"
-            "This helps the mentor focus on the result you want, not just the problem.",
+            "State one concrete outcome so the mentor can focus on the result you want, not just the problem.",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -2061,7 +2187,7 @@ async def capture_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             4,
             9,
             "What is the main challenge or blocker right now?\n"
-            "This helps the mentor avoid giving generic advice.",
+            "Name the one main blocker so the mentor can avoid generic advice.",
         )
     )
     return CHALLENGE
@@ -2082,7 +2208,7 @@ async def capture_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             5,
             9,
             "Write your question as clearly as you can.\n"
-            "A direct question usually gets a faster and more useful answer.",
+            "A single direct question usually gets a faster and more useful answer.",
         )
     )
     return QUESTION
@@ -2103,6 +2229,7 @@ async def capture_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             6,
             9,
             "Share any extra context, links, deadlines, or attempts so far.\n"
+            "Only include what matters for this case.\n"
             f"If there is nothing else to add, send {SKIP_LABEL}.",
         ),
         reply_markup=build_keyboard(SKIP_MENU),
@@ -2148,8 +2275,8 @@ async def capture_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             8,
             9,
             "How should the answer be delivered?\n"
-            "Private reply keeps the request and answer inside the bot.\n"
-            "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
+            "Private reply keeps the request and answer inside the bot and cannot be switched to public later.\n"
+            "Public answer keeps your identity private and may still be answered privately if that is more useful.",
         ),
         reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
@@ -2220,8 +2347,8 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
             2,
             3,
             "How should the answer be delivered?\n"
-            "Private reply keeps the request and answer inside the bot.\n"
-            "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
+            "Private reply keeps the request and answer inside the bot and cannot be switched to public later.\n"
+            "Public answer keeps your identity private and may still be answered privately if that is more useful.",
         ),
         reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
@@ -2319,6 +2446,14 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _, _, submission = find_submission(ticket_id)
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    request = normalize_payload(submission.get("request", {}))
+    if not allows_public_reply(request.get("answer_mode", "private")):
+        await update.message.reply_text(
+            public_reply_block_message(ticket_id),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
         return
 
     answer_text, missing_tags = expand_saved_tags(
@@ -2449,7 +2584,6 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
     ticket_id = int(submission["id"])
 
     if thread_context["side"] == "admin":
-        user_id = submission.get("user", {}).get("id")
         reply_text, missing_tags = expand_saved_tags(
             reply_text,
             {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
@@ -2461,30 +2595,17 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
             )
             return
 
-        try:
-            sent_message = await context.bot.send_message(
-                chat_id=user_id,
-                text=f"Private reply for ticket #{ticket_id}\n\n{reply_text}",
-                reply_to_message_id=thread_context.get("remote_reply_to_message_id"),
-            )
-        except TelegramError:
-            logger.exception("Failed to relay admin private-thread reply")
-            await update.message.reply_text(
-                f"I could not deliver the private reply for ticket #{ticket_id}."
-            )
-            return
-
-        append_response(
+        sent, error_message = await send_private_ticket_message(
+            context,
+            submission,
             ticket_id,
-            "answered_private",
-            {
-                "mode": "private_thread",
-                "direction": "mentor_to_user",
-                "text": reply_text,
-                "admin_message_id": update.message.message_id,
-                "user_message_id": sent_message.message_id,
-            },
+            f"Private reply for ticket #{ticket_id}\n\n{reply_text}",
+            update.message.message_id,
+            "mentor_to_user",
         )
+        if not sent:
+            await update.message.reply_text(error_message)
+            return
         return
 
     admin_id = context.application.bot_data.get("admin_id")
@@ -2546,6 +2667,14 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, _, submission = find_submission(ticket_id)
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+        return
+
+    request = normalize_payload(submission.get("request", {}))
+    if not allows_public_reply(request.get("answer_mode", "private")):
+        await update.message.reply_text(
+            public_reply_block_message(ticket_id),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
         return
 
     answer_text, missing_tags = expand_saved_tags(
@@ -2632,6 +2761,14 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
         return
 
+    request = normalize_payload(submission.get("request", {}))
+    if not allows_public_reply(request.get("answer_mode", "private")):
+        await update.message.reply_text(
+            public_reply_block_message(ticket_id),
+            reply_markup=build_keyboard(ADMIN_MENU),
+        )
+        return
+
     user_id = submission.get("user", {}).get("id")
     notice_text = build_public_notice(ticket_id, public_link)
 
@@ -2680,6 +2817,11 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
         return
 
     ticket_id = int(submission["id"])
+    request = normalize_payload(submission.get("request", {}))
+    if not allows_public_reply(request.get("answer_mode", "private")):
+        await update.message.reply_text(public_reply_block_message(ticket_id))
+        return
+
     user_id = submission.get("user", {}).get("id")
     public_link = getattr(update.message, "link", "") or ""
     public_link = normalize_https_url(public_link)

@@ -60,16 +60,18 @@ The configured admin account must also be an admin there so Telegram can offer t
 ## Public and private behavior
 
 - Private reply keeps the request and answer inside the bot.
+- If a user chooses private reply, the admin cannot switch that ticket to public later.
 - For private tickets, both sides can continue the same conversation by replying in the bot thread.
 - The bot receives the user's Telegram display name, username, and routing ID to deliver replies.
 - Before submission, the user can choose whether those Telegram details stay visible in the mentor view.
-- Public answer keeps the user identity private and publishes only a minimal anonymous version of the request.
+- Public answer keeps the user identity private and publishes only a minimal anonymous version of the request. The admin can still answer privately if that is more useful.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
 - `/markpublic` is still available if the public answer was posted manually somewhere else, and manual links are normalized to HTTPS.
 
 ## Admin workflow
 
 - `/dashboard` shows what is waiting on you, what is waiting on the user, and your current response-window message.
+- New tickets include a fast-read section with the main ask, outcome, blocker, and the fastest suggested reply path.
 - `/templates` lists concise ready replies for common situations.
 - `/tags` lists reusable placeholders like `{{website}}`.
 - `/savetag` and `/deletetag` let you manage saved shortcuts without redeploying.

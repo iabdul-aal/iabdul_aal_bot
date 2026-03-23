@@ -76,9 +76,10 @@ python bot.py
 5. Submit a private mentorship ticket.
 6. Submit a public mentorship ticket.
 7. Test `/dashboard`, `/templates`, `/tags`, `/quickreply`, `/reply`, `/replypublic`, `/markpublic`, and `/status`.
-8. Reply to a private ticket from both sides and confirm the thread continues through bot replies.
-9. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
-10. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+8. Confirm a private-mode ticket cannot be closed publicly through `/replypublic`, `/markpublic`, or a discussion reply.
+9. Confirm a public-mode ticket can still receive a private reply and continue through bot-thread replies.
+10. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
+11. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
 
 ## Git workflow
 
