@@ -16,6 +16,7 @@ This repository contains a Telegram mentorship bot with:
 - Request grading and copy-ready admin shortcuts
 - Saved tags for reusable links and text shortcuts
 - Discussion-group and channel publishing
+- Channel-post mirroring to bot users who are not in the public channel
 
 ## Before you start
 
@@ -35,9 +36,13 @@ TELEGRAM_TOKEN=your_bot_token
 ADMIN_ID=
 MENTOR_LABEL=your mentor
 MENTOR_IDENTITY_TEXT=
+MENTOR_LOGO_URL=
 MENTOR_IDENTITY_DEFAULT=hidden
 REQUIRE_PERSISTENT_STORAGE=
 MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
+CTA_CHANNEL_URL=
+CTA_WEBSITE_URL=
+CTA_EXTRA_TEXT=
 TAG_WEBSITE=
 TAG_BOOKING=
 PUBLIC_CHANNEL_URL=
@@ -48,6 +53,7 @@ DATA_DIR=./data
 ```
 
 If `PUBLIC_CHANNEL_URL` or `DISCUSSION_GROUP_URL` are set, use public `https://...` links.
+`MENTOR_IDENTITY_TEXT`, `MENTOR_AVAILABILITY_TEXT`, and `CTA_EXTRA_TEXT` support `\n` for line breaks in `.env`.
 
 3. Install dependencies:
 
@@ -84,7 +90,9 @@ python bot.py
 11. Confirm new tickets show a readiness grade and fast-read section for the admin.
 12. Confirm template and tag screens expose Telegram copy buttons for quick reuse.
 13. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
-14. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+14. Post in the configured public channel and confirm bot users who are not channel members receive the mirrored update.
+15. Run `/muteupdates`, post again, and confirm that user no longer receives mirrored channel updates until `/resumeupdates`.
+16. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
 
 ## Git workflow
 

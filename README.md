@@ -11,6 +11,7 @@ Telegram mentorship bot for student-facing guidance with private intake, anonymo
 - Anonymous public replies through a linked discussion group or channel
 - Ticket tracking with `/status`
 - Private tickets can continue through replies inside the bot
+- Channel posts can be mirrored to bot users who are not already in the public channel
 - Admin dashboard, request grading, copy-ready templates/tags, identity controls, and public/private reply tools
 
 ## Local run
@@ -35,9 +36,13 @@ TELEGRAM_TOKEN=your_bot_token
 ADMIN_ID=
 MENTOR_LABEL=your mentor
 MENTOR_IDENTITY_TEXT=
+MENTOR_LOGO_URL=
 MENTOR_IDENTITY_DEFAULT=hidden
 REQUIRE_PERSISTENT_STORAGE=
 MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
+CTA_CHANNEL_URL=
+CTA_WEBSITE_URL=
+CTA_EXTRA_TEXT=
 TAG_WEBSITE=
 TAG_BOOKING=
 PUBLIC_CHANNEL_URL=
@@ -48,6 +53,7 @@ DATA_DIR=./data
 ```
 
 If you set `PUBLIC_CHANNEL_URL` or `DISCUSSION_GROUP_URL`, use the public `https://...` link form. The bot normalizes these to HTTPS.
+`MENTOR_IDENTITY_TEXT`, `MENTOR_AVAILABILITY_TEXT`, and `CTA_EXTRA_TEXT` support `\n` for line breaks in `.env`.
 
 `ADMIN_ID` can stay empty at first. After the bot is running, open it in Telegram and send `/claimadmin` from the admin account.
 
@@ -72,6 +78,8 @@ If you intentionally want disposable storage for a temporary environment, set `R
 - Public answer keeps the user identity private and publishes only a minimal anonymous version of the request. The admin can still answer privately if that is more useful.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
 - `/markpublic` is still available if the public answer was posted manually somewhere else, and manual links are normalized to HTTPS.
+- If a public channel is configured, normal channel posts from that channel are mirrored to bot users who are not already members there.
+- Users can stop or resume mirrored channel updates with `/muteupdates` and `/resumeupdates`.
 
 ## Admin workflow
 
@@ -84,9 +92,12 @@ If you intentionally want disposable storage for a temporary environment, set `R
 - `/savetag` and `/deletetag` let you manage saved shortcuts without redeploying.
 - `/quickreply` sends a reusable private answer template and can optionally show or hide mentor identity.
 - `MENTOR_IDENTITY_TEXT` lets you define the identity/signature text used when you choose to show it.
+- `MENTOR_LOGO_URL` lets `/start` use a brand image when Telegram can fetch it.
 - `MENTOR_AVAILABILITY_TEXT` lets you publish fixed or variable response slots without changing code.
+- `CTA_CHANNEL_URL`, `CTA_WEBSITE_URL`, and `CTA_EXTRA_TEXT` add a light footer to user-facing ticket messages.
 - Any `TAG_<NAME>` variable in `.env` becomes `{{name}}` in admin replies. Example: `TAG_WEBSITE=https://your-site.example`.
 - Saved tags expand in `/reply`, `/replypublic`, `/quickreply`, and admin private-thread replies.
+- Built-in tags also include `{{identity}}`, `{{logo}}`, `{{cta_channel}}`, and `{{cta_website}}` when configured.
 
 ## Railway deployment
 

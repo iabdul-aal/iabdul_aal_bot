@@ -24,7 +24,7 @@ from telegram import (
     ReplyKeyboardRemove,
     Update,
 )
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -59,16 +59,25 @@ def normalize_https_url(value: str) -> str:
 
     return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
 
+
+def decode_env_text(value: str) -> str:
+    return (value or "").strip().replace("\\n", "\n")
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
 MENTOR_LABEL = (os.getenv("MENTOR_LABEL") or DEFAULT_MENTOR_LABEL).strip()
-MENTOR_IDENTITY_TEXT = (os.getenv("MENTOR_IDENTITY_TEXT") or "").strip()
+MENTOR_IDENTITY_TEXT = decode_env_text(os.getenv("MENTOR_IDENTITY_TEXT") or "")
 MENTOR_IDENTITY_DEFAULT = (os.getenv("MENTOR_IDENTITY_DEFAULT") or "hidden").strip().lower()
 REQUIRE_PERSISTENT_STORAGE_RAW = (os.getenv("REQUIRE_PERSISTENT_STORAGE") or "").strip().lower()
+MENTOR_LOGO_URL = normalize_https_url(os.getenv("MENTOR_LOGO_URL") or "")
+CTA_CHANNEL_URL = normalize_https_url(os.getenv("CTA_CHANNEL_URL") or "")
+CTA_WEBSITE_URL = normalize_https_url(os.getenv("CTA_WEBSITE_URL") or "")
+CTA_EXTRA_TEXT = decode_env_text(os.getenv("CTA_EXTRA_TEXT") or "")
 MENTOR_AVAILABILITY_TEXT = (
     os.getenv("MENTOR_AVAILABILITY_TEXT")
     or "Replies are handled in planned batches. High urgency means time-sensitive, not instant."
-).strip()
+)
+MENTOR_AVAILABILITY_TEXT = decode_env_text(MENTOR_AVAILABILITY_TEXT)
 PUBLIC_CHANNEL_URL = normalize_https_url(os.getenv("PUBLIC_CHANNEL_URL") or "")
 DISCUSSION_GROUP_URL = normalize_https_url(os.getenv("DISCUSSION_GROUP_URL") or "")
 DISCUSSION_GROUP_ID_RAW = (os.getenv("DISCUSSION_GROUP_ID") or "").strip()
@@ -86,6 +95,7 @@ PUBLIC_CHANNEL_FILE = DATA_DIR / "public_channel_id.txt"
 COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
 SUBMISSIONS_FILE = DATA_DIR / "submissions.jsonl"
 TAGS_FILE = DATA_DIR / "saved_tags.json"
+USERS_FILE = DATA_DIR / "known_users.json"
 
 TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONTACT_VISIBILITY, CONFIRM, QUICK_QUESTION = range(11)
 
@@ -146,6 +156,8 @@ USER_COMMANDS = [
     BotCommand("quick", "Send a one-message question"),
     BotCommand("availability", "See response windows"),
     BotCommand("help", "See how the bot works"),
+    BotCommand("muteupdates", "Stop channel news broadcasts in the bot"),
+    BotCommand("resumeupdates", "Resume channel news broadcasts in the bot"),
     BotCommand("cancel", "Cancel the current request"),
     BotCommand("status", "Check one of your ticket statuses"),
 ]
@@ -357,6 +369,124 @@ def read_env_tags() -> dict[str, str]:
         if name and text:
             tags[name] = text
     return dict(sorted(tags.items()))
+
+
+def read_known_users() -> dict[str, dict]:
+    with STORAGE_LOCK:
+        ensure_data_dir()
+        if not USERS_FILE.exists():
+            return {}
+
+        try:
+            payload = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to read known users")
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+
+        users: dict[str, dict] = {}
+        for raw_id, raw_record in payload.items():
+            user_id = parse_numeric_id(str(raw_id))
+            if user_id is None or not isinstance(raw_record, dict):
+                continue
+            users[str(user_id)] = {
+                "id": user_id,
+                "display_name": clean_text(str(raw_record.get("display_name", "")), "Unknown user"),
+                "username": (raw_record.get("username") or "").strip(),
+                "updates_enabled": bool(raw_record.get("updates_enabled", True)),
+                "first_seen": clean_text(str(raw_record.get("first_seen", "")), timestamp_now()),
+                "last_seen": clean_text(str(raw_record.get("last_seen", "")), timestamp_now()),
+            }
+        return users
+
+
+def save_known_users(users: dict[str, dict]) -> None:
+    with STORAGE_LOCK:
+        ensure_data_dir()
+        normalized: dict[str, dict] = {}
+        for raw_id, raw_record in users.items():
+            user_id = parse_numeric_id(str(raw_id))
+            if user_id is None or not isinstance(raw_record, dict):
+                continue
+            normalized[str(user_id)] = {
+                "id": user_id,
+                "display_name": clean_text(str(raw_record.get("display_name", "")), "Unknown user"),
+                "username": (raw_record.get("username") or "").strip(),
+                "updates_enabled": bool(raw_record.get("updates_enabled", True)),
+                "first_seen": clean_text(str(raw_record.get("first_seen", "")), timestamp_now()),
+                "last_seen": clean_text(str(raw_record.get("last_seen", "")), timestamp_now()),
+            }
+        USERS_FILE.write_text(
+            json.dumps(dict(sorted(normalized.items())), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def remember_known_user(user, updates_enabled: bool | None = None) -> None:
+    if user is None:
+        return
+
+    users = read_known_users()
+    key = str(user.id)
+    now = timestamp_now()
+    existing = users.get(key, {})
+    users[key] = {
+        "id": user.id,
+        "display_name": user.full_name or user.first_name or existing.get("display_name") or "Unknown user",
+        "username": user.username or existing.get("username", ""),
+        "updates_enabled": existing.get("updates_enabled", True) if updates_enabled is None else updates_enabled,
+        "first_seen": existing.get("first_seen", now),
+        "last_seen": now,
+    }
+    save_known_users(users)
+
+
+def set_user_updates_preference(user_id: int, enabled: bool) -> dict | None:
+    users = read_known_users()
+    key = str(user_id)
+    if key not in users:
+        users[key] = {
+            "id": user_id,
+            "display_name": "Unknown user",
+            "username": "",
+            "updates_enabled": enabled,
+            "first_seen": timestamp_now(),
+            "last_seen": timestamp_now(),
+        }
+    else:
+        users[key]["updates_enabled"] = enabled
+        users[key]["last_seen"] = timestamp_now()
+    save_known_users(users)
+    return users.get(key)
+
+
+def user_updates_enabled(user_id: int) -> bool:
+    users = read_known_users()
+    record = users.get(str(user_id))
+    return True if record is None else bool(record.get("updates_enabled", True))
+
+
+def collect_broadcast_targets(admin_id: int | None) -> list[int]:
+    known_users = read_known_users()
+    target_ids = {
+        int(user_id)
+        for user_id, record in known_users.items()
+        if bool(record.get("updates_enabled", True))
+    }
+    for submission in read_submissions():
+        user_id = submission.get("user", {}).get("id")
+        if not isinstance(user_id, int):
+            continue
+        known_record = known_users.get(str(user_id))
+        if known_record is not None and not bool(known_record.get("updates_enabled", True)):
+            continue
+        if user_id > 0:
+            target_ids.add(user_id)
+    if admin_id is not None and admin_id in target_ids:
+        target_ids.remove(admin_id)
+    return sorted(target_ids)
 
 
 def get_admin_id() -> int | None:
@@ -966,6 +1096,56 @@ def build_public_destination_text() -> str:
     return " or ".join(destinations)
 
 
+def cta_channel_url() -> str:
+    return CTA_CHANNEL_URL or PUBLIC_CHANNEL_URL
+
+
+def cta_website_url() -> str:
+    if CTA_WEBSITE_URL:
+        return CTA_WEBSITE_URL
+    return normalize_https_url(read_env_tags().get("website", ""))
+
+
+def build_user_cta_lines() -> list[str]:
+    lines: list[str] = []
+    channel_url = cta_channel_url()
+    website_url = cta_website_url()
+    if channel_url:
+        lines.append(f"Follow updates: {channel_url}")
+    lines.append("Use this bot again any time for focused mentorship requests.")
+    if website_url:
+        lines.append(f"More about the mentor: {website_url}")
+    if CTA_EXTRA_TEXT:
+        lines.append(CTA_EXTRA_TEXT)
+    return lines
+
+
+def append_user_cta(text: str) -> str:
+    cta_lines = build_user_cta_lines()
+    if not cta_lines:
+        return text
+    return f"{text}\n\nQuick links\n" + "\n".join(cta_lines)
+
+
+async def reply_with_optional_logo(message, text: str, reply_markup) -> None:
+    if MENTOR_LOGO_URL:
+        try:
+            await message.reply_photo(
+                photo=MENTOR_LOGO_URL,
+                caption=text,
+                reply_markup=reply_markup,
+            )
+            return
+        except TelegramError:
+            logger.exception("Failed to send mentor logo")
+
+    await message.reply_text(
+        text,
+        reply_markup=reply_markup,
+        link_preview_options=NO_PREVIEW,
+    )
+
+
 def build_public_posted_at_text(mode: str | None, link: str = "") -> str:
     normalized_link = normalize_https_url(link)
     if mode == "public_discussion":
@@ -983,6 +1163,11 @@ def build_public_posted_at_text(mode: str | None, link: str = "") -> str:
     if normalized_link:
         return normalized_link
     return build_public_destination_text()
+
+
+def should_skip_channel_broadcast(message) -> bool:
+    text = ((getattr(message, "text", None) or getattr(message, "caption", None) or "")).strip()
+    return bool(re.match(r"^Public answer for ticket #\d+", text))
 
 
 def step_text(step: int, total: int, body: str) -> str:
@@ -1031,9 +1216,17 @@ def build_builtin_tags() -> dict[str, str]:
     identity = render_mentor_signature("show")
     if identity:
         tags["identity"] = identity
+    if MENTOR_LOGO_URL:
+        tags["logo"] = MENTOR_LOGO_URL
     if PUBLIC_CHANNEL_URL:
         tags["public_channel"] = PUBLIC_CHANNEL_URL
         tags["channel"] = PUBLIC_CHANNEL_URL
+    channel_url = cta_channel_url()
+    if channel_url:
+        tags["cta_channel"] = channel_url
+    website_url = cta_website_url()
+    if website_url:
+        tags["cta_website"] = website_url
     if DISCUSSION_GROUP_URL:
         tags["discussion_group"] = DISCUSSION_GROUP_URL
         tags["discussion"] = DISCUSSION_GROUP_URL
@@ -1317,7 +1510,7 @@ def build_public_notice(ticket_id: int, link: str, mode: str | None = None) -> s
     lines = [f"Your public answer for ticket #{ticket_id} has been posted.", f"Posted in: {posted_at}"]
     if link:
         lines.append(f"Link: {link}")
-    return "\n".join(lines)
+    return append_user_cta("\n".join(lines))
 
 
 def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mode: str | None = None) -> str:
@@ -1329,7 +1522,7 @@ def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mod
         lines.extend(["", answer_text])
     if link:
         lines.extend(["", f"Link: {link}"])
-    return "\n".join(lines)
+    return append_user_cta("\n".join(lines))
 
 
 def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
@@ -1647,6 +1840,14 @@ async def send_private_ticket_message(
             f"{message_text}\n\n"
             "Reply to this message if you want to continue privately in the bot."
         )
+    if direction == "mentor_to_user":
+        prior_mentor_replies = [
+            response
+            for response in submission.get("responses", [])
+            if response.get("direction") == "mentor_to_user"
+        ]
+        if not prior_mentor_replies:
+            message_text = append_user_cta(message_text)
 
     reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
     try:
@@ -1799,14 +2000,17 @@ async def deliver_submission(
             "Reply to this message or any later private reply from the bot to continue the same ticket."
         )
     user_confirmation_message = await update.message.reply_text(
-        f"Your mentorship request has been sent.\n"
-        f"Ticket: #{record['id']}\n"
-        f"Requested reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
-        f"Reply policy: {answer_mode_policy_text(record['request']['answer_mode'])}\n"
-        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
-        f"Best improvement: {quality['improvement']}\n"
-        f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
-        f"{public_note}",
+        append_user_cta(
+            f"Your mentorship request has been sent.\n"
+            f"Ticket: #{record['id']}\n"
+            f"Requested reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
+            f"Reply policy: {answer_mode_policy_text(record['request']['answer_mode'])}\n"
+            f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
+            f"Best improvement: {quality['improvement']}\n"
+            f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
+            f"{public_note}\n"
+            "If you do not want channel news mirrored here, use /muteupdates. Use /resumeupdates any time to turn them back on."
+        ),
         reply_markup=build_keyboard(MAIN_MENU),
         link_preview_options=NO_PREVIEW,
     )
@@ -1818,6 +2022,96 @@ async def deliver_submission(
     }
     save_submission(record)
     return True
+
+
+async def remember_private_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat is None or update.effective_chat.type != "private":
+        return
+    if update.effective_user is None:
+        return
+    remember_known_user(update.effective_user)
+
+
+async def mute_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    remember_known_user(update.effective_user, updates_enabled=False)
+    channel_url = cta_channel_url() or build_public_destination_text()
+    await update.message.reply_text(
+        f"Channel updates in the bot are now paused for you.\n"
+        f"Follow directly here instead if you want: {channel_url}\n"
+        "Use /resumeupdates any time to receive channel news here again.",
+        reply_markup=build_keyboard(MAIN_MENU),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def resume_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    remember_known_user(update.effective_user, updates_enabled=True)
+    await update.message.reply_text(
+        "Channel updates in the bot are active again.\n"
+        "If you are not already in the public channel, new channel posts can now be mirrored here.",
+        reply_markup=build_keyboard(MAIN_MENU),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def broadcast_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if message is None or chat is None:
+        return
+
+    public_channel_id = context.application.bot_data.get("public_channel_id")
+    if public_channel_id is None or chat.id != public_channel_id:
+        return
+    if should_skip_channel_broadcast(message):
+        return
+    if not (getattr(message, "text", None) or getattr(message, "caption", None) or getattr(message, "effective_attachment", None)):
+        return
+
+    admin_id = context.application.bot_data.get("admin_id")
+    targets = collect_broadcast_targets(admin_id)
+    if not targets:
+        return
+
+    delivered = 0
+    skipped_members = 0
+    failed = 0
+
+    for user_id in targets:
+        try:
+            member = await context.bot.get_chat_member(chat_id=public_channel_id, user_id=user_id)
+            if member.status in {"creator", "administrator", "member", "restricted"}:
+                skipped_members += 1
+                continue
+        except TelegramError:
+            pass
+
+        try:
+            await context.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=chat.id,
+                message_id=message.message_id,
+            )
+            delivered += 1
+        except Forbidden:
+            set_user_updates_preference(user_id, False)
+            failed += 1
+        except TelegramError:
+            failed += 1
+
+    logger.info(
+        "Broadcasted channel post %s to %s bot users, skipped %s channel members, failed %s deliveries",
+        message.message_id,
+        delivered,
+        skipped_members,
+        failed,
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1840,18 +2134,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text(
-        "Welcome to the mentorship bot.\n"
-        f"Your request is delivered to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
-        "This is a free service designed to stay practical, concise, and sustainable.\n\n"
-        "You can ask about research direction, technical guidance, project review, academic growth, career questions, startup ideas, or your own custom topic.\n\n"
-        f"{GUIDED_REQUEST_LABEL} explains each step and helps you shape a stronger request.\n"
-        f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n\n"
-        "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
-        "Before submitting, you can choose whether those details stay visible in the mentor view.\n\n"
-        f"{PRIVATE_REPLY_LABEL} stays inside the bot and cannot be turned into a public answer later.\n"
-        f"{PUBLIC_ANSWER_LABEL} keeps your identity private and may still be answered privately if that is more useful.",
-        reply_markup=build_keyboard(MAIN_MENU),
+    await reply_with_optional_logo(
+        update.message,
+        append_user_cta(
+            "Welcome to the mentorship bot.\n"
+            f"Your request is delivered to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
+            "This is a free service designed to stay practical, concise, and sustainable.\n\n"
+            "You can ask about research direction, technical guidance, project review, academic growth, career questions, startup ideas, or your own custom topic.\n\n"
+            f"{GUIDED_REQUEST_LABEL} explains each step and helps you shape a stronger request.\n"
+            f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n\n"
+            "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
+            "Before submitting, you can choose whether those details stay visible in the mentor view.\n\n"
+            f"{PRIVATE_REPLY_LABEL} stays inside the bot and cannot be turned into a public answer later.\n"
+            f"{PUBLIC_ANSWER_LABEL} keeps your identity private and may still be answered privately if that is more useful.\n\n"
+            "If you are not already in the public channel, important channel updates can also arrive here.\n"
+            "Use /muteupdates to stop them or /resumeupdates to turn them back on."
+        ),
+        build_keyboard(MAIN_MENU),
     )
 
 
@@ -1875,6 +2174,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/discussionstatus shows the linked discussion group.\n"
             "/setchannel opens a private chat picker for the public channel.\n"
             "/channelstatus shows the public answer channel.\n"
+            "Normal posts from the public channel are mirrored to bot users who are not channel members.\n"
             "/availability shows the public response-window message.\n"
             f"{PRIVATE_REPLY_LABEL} tickets are locked private and cannot be answered publicly.\n"
             f"{PUBLIC_ANSWER_LABEL} tickets may still be answered privately when that is more useful.\n"
@@ -1890,18 +2190,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     await update.message.reply_text(
-        "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
-        f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
-        f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n"
-        "More specific requests are graded as more answer-ready and usually get faster, cleaner replies.\n\n"
-        "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
-        f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
-        f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
-        "If your ticket is being handled privately in the bot, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
-        f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
-        "Use /status <ticket_number> to check one of your ticket statuses.\n"
-        "Use /cancel any time during the guided flow.",
+        append_user_cta(
+            "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
+            f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
+            f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n"
+            "More specific requests are graded as more answer-ready and usually get faster, cleaner replies.\n\n"
+            "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
+            f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
+            f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
+            "If your ticket is being handled privately in the bot, reply to the confirmation or any later private bot reply to continue the same conversation.\n"
+            "If you are not in the public channel, important channel posts can also be mirrored here for you.\n"
+            "Use /muteupdates to stop those updates or /resumeupdates to turn them back on.\n"
+            f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
+            "Use /status <ticket_number> to check one of your ticket statuses.\n"
+            "Use /cancel any time during the guided flow."
+        ),
         reply_markup=build_keyboard(MAIN_MENU),
+        link_preview_options=NO_PREVIEW,
     )
 
 
@@ -2238,11 +2543,13 @@ async def availability_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if update.message is None:
         return
 
-    reply_markup = build_keyboard(ADMIN_MENU) if is_admin(
-        context, update.effective_user.id if update.effective_user else None
-    ) else build_keyboard(MAIN_MENU)
+    admin_view = is_admin(context, update.effective_user.id if update.effective_user else None)
+    reply_markup = build_keyboard(ADMIN_MENU) if admin_view else build_keyboard(MAIN_MENU)
+    message_text = build_availability_message()
+    if not admin_view:
+        message_text = append_user_cta(message_text)
     await update.message.reply_text(
-        build_availability_message(),
+        message_text,
         reply_markup=reply_markup,
         link_preview_options=NO_PREVIEW,
     )
@@ -2752,7 +3059,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("You can only check your own tickets.")
         return
 
-    await update.message.reply_text(build_user_status(submission), link_preview_options=NO_PREVIEW)
+    message_text = build_user_status(submission)
+    if is_ticket_owner:
+        message_text = append_user_cta(message_text)
+    await update.message.reply_text(message_text, link_preview_options=NO_PREVIEW)
 
 
 async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3271,9 +3581,12 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_request)],
     )
 
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, remember_private_user), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("availability", availability_command))
+    app.add_handler(CommandHandler("availability", availability_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("muteupdates", mute_updates, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("resumeupdates", resume_updates, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("claimadmin", claim_admin))
     app.add_handler(CommandHandler("adminstatus", admin_status))
@@ -3293,6 +3606,7 @@ def main() -> None:
             handle_chat_shared,
         )
     )
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, broadcast_channel_post))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reply", reply_ticket))
     app.add_handler(CommandHandler("quickreply", quick_reply_ticket))
@@ -3335,7 +3649,7 @@ def main() -> None:
     app.add_handler(CommandHandler("cancel", cancel_request))
 
     logger.info("Mentorship bot is starting")
-    app.run_polling(allowed_updates=["message"])
+    app.run_polling(allowed_updates=["message", "channel_post"])
 
 
 if __name__ == "__main__":
