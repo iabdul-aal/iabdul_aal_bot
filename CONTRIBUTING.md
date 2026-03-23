@@ -7,6 +7,8 @@ Thanks for contributing to `telegram-mentorship-bot`.
 This repository contains a Telegram mentorship bot with:
 
 - Private mentorship requests
+- Flexible topic and stage intake
+- Optional hiding of Telegram contact details in mentor view
 - Anonymous public answer support
 - Ticket tracking
 - Discussion-group and channel publishing

@@ -1,11 +1,13 @@
 # telegram-mentorship-bot
 
-Telegram mentorship bot with private intake, anonymous public answers, ticket tracking, and discussion or channel publishing.
+Telegram mentorship bot for student-facing guidance with private intake, anonymous public answers, ticket tracking, flexible topics, and discussion or channel publishing.
 
 ## What it does
 
 - Guided and quick question flows
+- Flexible topic and stage capture with custom entries
 - Private replies inside Telegram
+- Optional hiding of Telegram contact details in the mentor view
 - Anonymous public replies through a linked discussion group or channel
 - Ticket tracking with `/status`
 - Admin tools for private replies, public replies, and manual public marking
@@ -50,6 +52,8 @@ The configured admin account must also be an admin there so Telegram can offer t
 ## Public and private behavior
 
 - Private reply keeps the request and answer inside the bot.
+- The bot receives the user's Telegram display name, username, and routing ID to deliver replies.
+- Before submission, the user can choose whether those Telegram details stay visible in the mentor view.
 - Public answer keeps the user identity private and publishes only a minimal anonymous version of the request.
 - `/replypublic` lets the bot post the public answer directly to the linked discussion group or channel.
 - `/markpublic` is still available if the public answer was posted manually somewhere else.

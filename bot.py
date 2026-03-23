@@ -53,13 +53,15 @@ PUBLIC_CHANNEL_FILE = DATA_DIR / "public_channel_id.txt"
 COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
 SUBMISSIONS_FILE = DATA_DIR / "submissions.jsonl"
 
-TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONFIRM, QUICK_QUESTION = range(10)
+TRACK, LEVEL, GOAL, CHALLENGE, QUESTION, CONTEXT, URGENCY, ANSWER_MODE, CONTACT_VISIBILITY, CONFIRM, QUICK_QUESTION = range(11)
 
 GUIDED_REQUEST_LABEL = "Guided request"
 QUICK_QUESTION_LABEL = "Quick question"
 HOW_IT_WORKS_LABEL = "How it works"
 PRIVATE_REPLY_LABEL = "Private reply"
 PUBLIC_ANSWER_LABEL = "Public answer"
+SHOW_CONTACT_LABEL = "Share contact"
+HIDE_CONTACT_LABEL = "Hide contact"
 SUBMIT_LABEL = "Submit"
 RESTART_LABEL = "Restart"
 CANCEL_LABEL = "Cancel"
@@ -71,10 +73,20 @@ CHANNEL_PICKER_REQUEST_ID = 7001
 DISCUSSION_PICKER_REQUEST_ID = 7002
 
 MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL]]
-TRACK_MENU = [["AI / LLMs", "Python"], ["Backend", "Frontend"], ["Career", "General"]]
-LEVEL_MENU = [["Beginner", "Intermediate", "Advanced"]]
+TRACK_MENU = [
+    ["Research direction", "Technical guidance"],
+    ["Project review", "Academic growth"],
+    ["Career", "Startup advice"],
+    ["Study strategy", "Write my own"],
+]
+LEVEL_MENU = [
+    ["School student", "University student"],
+    ["Postgraduate", "Founder / early career"],
+    ["Working professional", "Write my own"],
+]
 URGENCY_MENU = [["Low", "Normal", "High"]]
 ANSWER_MODE_MENU = [[PRIVATE_REPLY_LABEL, PUBLIC_ANSWER_LABEL]]
+CONTACT_VISIBILITY_MENU = [[SHOW_CONTACT_LABEL, HIDE_CONTACT_LABEL]]
 CONFIRM_MENU = [[SUBMIT_LABEL, RESTART_LABEL], [CANCEL_LABEL]]
 SKIP_MENU = [[SKIP_LABEL]]
 
@@ -82,6 +94,7 @@ TRACK_CHOICES = {item for row in TRACK_MENU for item in row}
 LEVEL_CHOICES = {item for row in LEVEL_MENU for item in row}
 URGENCY_CHOICES = {item for row in URGENCY_MENU for item in row}
 ANSWER_MODE_CHOICES = {item for row in ANSWER_MODE_MENU for item in row}
+CONTACT_VISIBILITY_CHOICES = {item for row in CONTACT_VISIBILITY_MENU for item in row}
 
 USER_COMMANDS = [
     BotCommand("start", "Open the mentorship bot"),
@@ -393,6 +406,17 @@ def format_answer_mode(value: str) -> str:
     return PUBLIC_ANSWER_LABEL if normalize_answer_mode(value) == "public" else PRIVATE_REPLY_LABEL
 
 
+def normalize_contact_visibility(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"hide", "hidden", HIDE_CONTACT_LABEL.lower()}:
+        return "hidden"
+    return "shown"
+
+
+def format_contact_visibility(value: str) -> str:
+    return "Hidden from mentor view" if normalize_contact_visibility(value) == "hidden" else "Shown to mentor"
+
+
 def format_source(value: str) -> str:
     labels = {
         "guided_flow": "Guided request",
@@ -457,6 +481,21 @@ def step_text(step: int, total: int, body: str) -> str:
     return f"Step {step}/{total}\n{body}"
 
 
+def build_contact_visibility_prompt(user) -> str:
+    display_name = user.full_name or user.first_name or "Unknown user"
+    username = f"@{user.username}" if user.username else "Not set"
+    return (
+        "What the bot receives from Telegram\n\n"
+        f"Display name: {display_name}\n"
+        f"Username: {username}\n"
+        f"Telegram routing ID: {user.id}\n\n"
+        "Why this matters\n"
+        "The bot uses this data to keep your ticket connected and deliver replies.\n"
+        "You can choose whether these details stay visible in the mentor view.\n"
+        "If you hide them, the bot still keeps the routing ID privately so answers can reach you."
+    )
+
+
 def build_public_notice(ticket_id: int, link: str) -> str:
     if link:
         return f"Your public answer for ticket #{ticket_id} is ready:\n{link}"
@@ -511,6 +550,7 @@ def normalize_payload(payload: dict) -> dict:
         "context": clean_text(payload.get("context", ""), "No extra context"),
         "urgency": clean_text(payload.get("urgency", ""), "Normal"),
         "answer_mode": normalize_answer_mode(payload.get("answer_mode", "")),
+        "contact_visibility": normalize_contact_visibility(payload.get("contact_visibility", "")),
     }
 
 
@@ -539,23 +579,36 @@ def build_submission_record(user, payload: dict, source: str) -> dict:
 def format_submission(record: dict) -> str:
     user = record.get("user", {})
     request = normalize_payload(record.get("request", {}))
-    username = f"@{user['username']}" if user.get("username") else "Not provided"
     ticket_id = record.get("id", "Unknown")
+    contact_visibility = normalize_contact_visibility(request.get("contact_visibility", "shown"))
+
+    if contact_visibility == "hidden":
+        contact_lines = (
+            "Private contact\n"
+            "The requester chose to hide their display name, username, and Telegram ID in the mentor view.\n"
+            "The bot still keeps the delivery route privately so replies can be sent."
+        )
+    else:
+        username = f"@{user['username']}" if user.get("username") else "Not provided"
+        contact_lines = (
+            "Private contact\n"
+            f"Display name: {user.get('display_name', 'Unknown user')}\n"
+            f"Username: {username}\n"
+            f"Telegram ID: {user.get('id', 'Unknown')}"
+        )
 
     return (
         f"Mentorship Ticket #{ticket_id}\n\n"
         f"Submitted: {record.get('display_time', 'Unknown')}\n"
         f"Source: {format_source(record.get('source', 'guided_flow'))}\n"
         f"Status: {format_status(record.get('status', 'open'))}\n\n"
-        f"Private contact\n"
-        f"Display name: {user.get('display_name', 'Unknown user')}\n"
-        f"Username: {username}\n"
-        f"Telegram ID: {user.get('id', 'Unknown')}\n\n"
+        f"{contact_lines}\n\n"
         f"Request\n"
-        f"Track: {request['track']}\n"
-        f"Level: {request['level']}\n"
+        f"Topic: {request['track']}\n"
+        f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
         f"Reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
+        f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal: {request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
         f"Question:\n{request['question']}\n\n"
@@ -574,8 +627,8 @@ def format_discussion_ticket(record: dict) -> str:
 
     return (
         f"Anonymous Mentorship Ticket #{record['id']}\n\n"
-        f"Track: {request['track']}\n"
-        f"Level: {request['level']}\n"
+        f"Topic: {request['track']}\n"
+        f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n\n"
         f"{public_request}\n\n"
         "Reply here with the public answer to close the ticket."
@@ -586,10 +639,11 @@ def build_summary(payload: dict) -> str:
     request = normalize_payload(payload)
     return (
         "Review your mentorship request:\n\n"
-        f"Track: {request['track']}\n"
-        f"Level: {request['level']}\n"
+        f"Topic: {request['track']}\n"
+        f"Stage: {request['level']}\n"
         f"Urgency: {request['urgency']}\n"
         f"Reply mode: {format_answer_mode(request['answer_mode'])}\n\n"
+        f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal:\n{request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
         f"Question:\n{request['question']}\n\n"
@@ -604,8 +658,9 @@ def build_user_status(record: dict) -> str:
         f"Ticket #{record['id']}",
         f"Status: {format_status(record.get('status', 'open'))}",
         f"Submitted: {record.get('display_time', 'Unknown')}",
-        f"Track: {request.get('track', 'General')}",
+        f"Topic: {request.get('track', 'General')}",
         f"Reply mode: {format_answer_mode(request.get('answer_mode', 'private'))}",
+        f"Contact in mentor view: {format_contact_visibility(request.get('contact_visibility', 'shown'))}",
     ]
 
     responses = record.get("responses", [])
@@ -726,7 +781,9 @@ async def deliver_submission(
     await update.message.reply_text(
         f"Your mentorship request has been sent.\n"
         f"Ticket: #{record['id']}\n"
-        f"Reply mode: {format_answer_mode(record['request']['answer_mode'])}{public_note}",
+        f"Reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
+        f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
+        f"{public_note}",
         reply_markup=build_keyboard(MAIN_MENU),
     )
     return True
@@ -755,10 +812,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Welcome to the mentorship bot.\n"
         f"Your request is delivered to {MENTOR_LABEL or DEFAULT_MENTOR_LABEL}.\n\n"
-        f"{GUIDED_REQUEST_LABEL} walks you through a structured request.\n"
+        "You can ask about research direction, technical guidance, project review, academic growth, career questions, startup ideas, or your own custom topic.\n\n"
+        f"{GUIDED_REQUEST_LABEL} explains each step and helps you shape a stronger request.\n"
         f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n\n"
+        "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
+        "Before submitting, you can choose whether those details stay visible in the mentor view.\n\n"
         f"{PRIVATE_REPLY_LABEL} stays inside the bot.\n"
-        f"{PUBLIC_ANSWER_LABEL} keeps your identity private and only shares a minimal anonymous version.",
+        f"{PUBLIC_ANSWER_LABEL} keeps your identity private and only shares a minimal anonymous version if needed.",
         reply_markup=build_keyboard(MAIN_MENU),
     )
 
@@ -784,8 +844,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     await update.message.reply_text(
-        f"{GUIDED_REQUEST_LABEL} collects track, level, goal, blocker, and urgency.\n"
-        f"{QUICK_QUESTION_LABEL} is the fastest path for a one-message request.\n"
+        "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
+        f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
+        f"{QUICK_QUESTION_LABEL} is the fastest path if you already know what you want to ask.\n\n"
+        "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
         f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot.\n"
         f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version.\n"
         "Use /status <ticket_number> to check one of your ticket statuses.\n"
@@ -890,7 +952,7 @@ async def discussion_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     discussion_group_id = context.application.bot_data.get("discussion_group_id")
     if discussion_group_id is None:
         await update.message.reply_text(
-            "No discussion group is linked yet. Run /setdiscussion inside the linked group."
+            "No discussion group is linked yet. Run /setdiscussion in your private admin chat and choose the group."
         )
         return
 
@@ -973,7 +1035,7 @@ async def channel_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     public_channel_id = context.application.bot_data.get("public_channel_id")
     if public_channel_id is None:
         await update.message.reply_text(
-            "No public channel is linked yet. Run /setchannel inside the channel."
+            "No public channel is linked yet. Run /setchannel in your private admin chat and choose the channel."
         )
         return
 
@@ -1072,7 +1134,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Answered publicly: {status_counter.get('answered_public', 0)}\n\n"
         f"Private reply preference: {answer_mode_counter.get('private', 0)}\n"
         f"Public answer preference: {answer_mode_counter.get('public', 0)}\n\n"
-        f"Top tracks:\n{top_tracks}"
+        f"Top topics:\n{top_tracks}"
     )
 
 
@@ -1102,7 +1164,12 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     reset_request(context)
     context.user_data["intake_mode"] = "guided"
     await update.message.reply_text(
-        step_text(1, 8, "Choose the track that fits your request best."),
+        step_text(
+            1,
+            9,
+            "Choose the topic that fits your request best.\n"
+            "You can tap a suggestion or write your own topic.",
+        ),
         reply_markup=build_keyboard(TRACK_MENU),
     )
     return TRACK
@@ -1131,8 +1198,9 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         step_text(
             1,
-            2,
-            "Send your question in one message.\nYou can include a short bit of context if it helps.",
+            3,
+            "Send your question in one message.\n"
+            "You can ask about research direction, technical guidance, project review, academic growth, career, startup ideas, or your own topic.",
         ),
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -1145,7 +1213,7 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if is_admin(context, update.effective_user.id):
         await update.message.reply_text(
-            "Admin mode is active.\nUse /stats, /reply, or /markpublic to manage tickets.",
+            "Admin mode is active.\nUse /stats, /reply, or /replypublic to manage tickets.",
             reply_markup=ReplyKeyboardRemove(),
         )
         return ConversationHandler.END
@@ -1164,7 +1232,7 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     reset_request(context)
     context.user_data["intake_mode"] = "quick"
     context.user_data["request"] = {
-        "track": "General",
+        "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
         "challenge": "Not provided",
@@ -1175,10 +1243,10 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         step_text(
             2,
-            2,
+            3,
             "How should the answer be delivered?\n"
-            "Private reply stays inside the bot.\n"
-            "Public answer keeps your identity private and shares only a minimal anonymous version.",
+            "Private reply keeps the request and answer inside the bot.\n"
+            "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
         ),
         reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
@@ -1190,16 +1258,21 @@ async def capture_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return TRACK
 
     track = (update.message.text or "").strip()
-    if track not in TRACK_CHOICES:
+    if not track:
         await update.message.reply_text(
-            "Please choose one of the track options from the keyboard.",
+            "Choose one of the suggested topics or write your own.",
             reply_markup=build_keyboard(TRACK_MENU),
         )
         return TRACK
 
     context.user_data["request"]["track"] = track
     await update.message.reply_text(
-        step_text(2, 8, "What is your current level in this area?"),
+        step_text(
+            2,
+            9,
+            "What stage are you at right now?\n"
+            "You can tap a suggestion or write your own stage.",
+        ),
         reply_markup=build_keyboard(LEVEL_MENU),
     )
     return LEVEL
@@ -1210,16 +1283,21 @@ async def capture_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return LEVEL
 
     level = (update.message.text or "").strip()
-    if level not in LEVEL_CHOICES:
+    if not level:
         await update.message.reply_text(
-            "Please choose Beginner, Intermediate, or Advanced.",
+            "Share your current stage so the answer matches where you are now.",
             reply_markup=build_keyboard(LEVEL_MENU),
         )
         return LEVEL
 
     context.user_data["request"]["level"] = level
     await update.message.reply_text(
-        step_text(3, 8, "What outcome are you trying to achieve?"),
+        step_text(
+            3,
+            9,
+            "What outcome are you trying to achieve?\n"
+            "This helps the mentor focus on the result you want, not just the problem.",
+        ),
         reply_markup=ReplyKeyboardRemove(),
     )
     return GOAL
@@ -1235,7 +1313,14 @@ async def capture_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return GOAL
 
     context.user_data["request"]["goal"] = goal
-    await update.message.reply_text(step_text(4, 8, "What is the main challenge or blocker right now?"))
+    await update.message.reply_text(
+        step_text(
+            4,
+            9,
+            "What is the main challenge or blocker right now?\n"
+            "This helps the mentor avoid giving generic advice.",
+        )
+    )
     return CHALLENGE
 
 
@@ -1249,7 +1334,14 @@ async def capture_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return CHALLENGE
 
     context.user_data["request"]["challenge"] = challenge
-    await update.message.reply_text(step_text(5, 8, "Write your mentorship question as clearly as you can."))
+    await update.message.reply_text(
+        step_text(
+            5,
+            9,
+            "Write your question as clearly as you can.\n"
+            "A direct question usually gets a faster and more useful answer.",
+        )
+    )
     return QUESTION
 
 
@@ -1266,8 +1358,8 @@ async def capture_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(
         step_text(
             6,
-            8,
-            "Share any extra context, links, or code snippets.\n"
+            9,
+            "Share any extra context, links, deadlines, or attempts so far.\n"
             f"If there is nothing else to add, send {SKIP_LABEL}.",
         ),
         reply_markup=build_keyboard(SKIP_MENU),
@@ -1284,7 +1376,12 @@ async def capture_context(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "No extra context" if context_text.lower() == SKIP_LABEL.lower() else clean_text(context_text, "No extra context")
     )
     await update.message.reply_text(
-        step_text(7, 8, "How urgent is this request?"),
+        step_text(
+            7,
+            9,
+            "How urgent is this request?\n"
+            "This helps the mentor prioritize the queue.",
+        ),
         reply_markup=build_keyboard(URGENCY_MENU),
     )
     return URGENCY
@@ -1306,10 +1403,10 @@ async def capture_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         step_text(
             8,
-            8,
+            9,
             "How should the answer be delivered?\n"
-            "Private reply stays inside the bot.\n"
-            "Public answer keeps your identity private and shares only a minimal anonymous version.",
+            "Private reply keeps the request and answer inside the bot.\n"
+            "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
         ),
         reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
@@ -1317,7 +1414,7 @@ async def capture_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def capture_answer_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.message is None:
+    if update.message is None or update.effective_user is None:
         return ANSWER_MODE
 
     answer_mode = (update.message.text or "").strip()
@@ -1329,6 +1426,27 @@ async def capture_answer_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ANSWER_MODE
 
     context.user_data["request"]["answer_mode"] = normalize_answer_mode(answer_mode)
+    total_steps = 3 if context.user_data.get("intake_mode") == "quick" else 9
+    await update.message.reply_text(
+        step_text(total_steps, total_steps, build_contact_visibility_prompt(update.effective_user)),
+        reply_markup=build_keyboard(CONTACT_VISIBILITY_MENU),
+    )
+    return CONTACT_VISIBILITY
+
+
+async def capture_contact_visibility(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message is None:
+        return CONTACT_VISIBILITY
+
+    visibility = (update.message.text or "").strip()
+    if visibility not in CONTACT_VISIBILITY_CHOICES:
+        await update.message.reply_text(
+            f"Please choose {SHOW_CONTACT_LABEL} or {HIDE_CONTACT_LABEL}.",
+            reply_markup=build_keyboard(CONTACT_VISIBILITY_MENU),
+        )
+        return CONTACT_VISIBILITY
+
+    context.user_data["request"]["contact_visibility"] = normalize_contact_visibility(visibility)
     await update.message.reply_text(
         build_summary(context.user_data["request"]),
         reply_markup=build_keyboard(CONFIRM_MENU),
@@ -1346,7 +1464,7 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
         return QUICK_QUESTION
 
     context.user_data["request"] = {
-        "track": "General",
+        "track": "General / custom",
         "level": "Not provided",
         "goal": "Not provided",
         "challenge": "Not provided",
@@ -1357,10 +1475,10 @@ async def capture_quick_question(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         step_text(
             2,
-            2,
+            3,
             "How should the answer be delivered?\n"
-            "Private reply stays inside the bot.\n"
-            "Public answer keeps your identity private and shares only a minimal anonymous version.",
+            "Private reply keeps the request and answer inside the bot.\n"
+            "Public answer keeps your identity private and only shares a minimal anonymous version if needed.",
         ),
         reply_markup=build_keyboard(ANSWER_MODE_MENU),
     )
@@ -1716,6 +1834,7 @@ def main() -> None:
             CONTEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_context)],
             URGENCY: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_urgency)],
             ANSWER_MODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_answer_mode)],
+            CONTACT_VISIBILITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_contact_visibility)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_request)],
             QUICK_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_quick_question)],
         },
