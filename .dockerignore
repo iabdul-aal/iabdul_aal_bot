@@ -1,0 +1,10 @@
+.env
+.venv
+venv
+__pycache__
+.pytest_cache
+.railway
+data
+*.pyc
+*.pyo
+*.pyd
