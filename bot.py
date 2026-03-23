@@ -13,8 +13,12 @@ from telegram import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     KeyboardButtonRequestChat,
+    LinkPreviewOptions,
     MessageOriginChannel,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -172,6 +176,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 STORAGE_LOCK = Lock()
+NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 FAST_REPLY_TEMPLATES = {
     "queue": {
@@ -254,6 +259,15 @@ def build_chat_request_keyboard(button_text: str, request_chat: KeyboardButtonRe
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+def chunk_items(items: list, size: int) -> list[list]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def build_copy_button(label: str, value: str) -> InlineKeyboardButton:
+    text = (value[:256] if value else label).strip("\n")
+    return InlineKeyboardButton(label, copy_text=CopyTextButton(text))
 
 
 def ensure_data_dir() -> None:
@@ -585,6 +599,110 @@ def answer_mode_policy_short(value: str) -> str:
     return "Public flexible" if allows_public_reply(value) else "Private only"
 
 
+def is_specific_track(value: str) -> bool:
+    lowered = (value or "").strip().lower()
+    return lowered not in {"", "general", "general / custom", "write my own"}
+
+
+def looks_like_direct_question(value: str) -> bool:
+    text = (value or "").strip().lower()
+    if not text or text == "not provided":
+        return False
+    starters = (
+        "what ",
+        "how ",
+        "why ",
+        "should ",
+        "can ",
+        "could ",
+        "would ",
+        "will ",
+        "is ",
+        "are ",
+        "do ",
+        "does ",
+        "which ",
+        "where ",
+        "when ",
+    )
+    return "?" in text or text.startswith(starters)
+
+
+def assess_request_quality(request: dict) -> dict[str, str | int]:
+    score = 0
+    improvements: list[str] = []
+    goal = request.get("goal", "Not provided")
+    challenge = request.get("challenge", "Not provided")
+    question = request.get("question", "Not provided")
+    context = request.get("context", "No extra context")
+
+    if is_specific_track(request.get("track", "")):
+        score += 10
+    else:
+        improvements.append("choose a more specific topic")
+
+    if request.get("level") != "Not provided":
+        score += 10
+    else:
+        improvements.append("say what stage you are at")
+
+    if goal != "Not provided":
+        score += 15
+    else:
+        improvements.append("add one concrete outcome")
+
+    if challenge != "Not provided":
+        score += 15
+    else:
+        improvements.append("name the main blocker")
+
+    if question != "Not provided":
+        score += 10
+        if looks_like_direct_question(question):
+            score += 10
+        else:
+            improvements.append("turn the request into one direct question")
+
+        if len(question) <= 220 and question.count("?") <= 1:
+            score += 10
+        else:
+            improvements.append("reduce it to one focused question")
+    else:
+        improvements.append("ask one direct question")
+
+    if context != "No extra context":
+        score += 15
+    else:
+        improvements.append("add one context detail, attempt, or deadline")
+
+    if request.get("urgency") in URGENCY_CHOICES:
+        score += 5
+
+    if score >= 90:
+        grade = "A"
+        label = "Very ready"
+    elif score >= 80:
+        grade = "B"
+        label = "Ready"
+    elif score >= 65:
+        grade = "C"
+        label = "Usable"
+    elif score >= 50:
+        grade = "D"
+        label = "Needs sharpening"
+    else:
+        grade = "E"
+        label = "Needs context"
+
+    improvement = improvements[0] if improvements else "Ready for a focused answer."
+    return {
+        "score": score,
+        "grade": grade,
+        "label": label,
+        "improvement": improvement,
+    }
+
+
 def suggest_quick_reply_template(request: dict) -> str | None:
     track = request.get("track", "").lower()
     combined_text = " ".join(
@@ -596,6 +714,9 @@ def suggest_quick_reply_template(request: dict) -> str | None:
             request.get("context", ""),
         ]
     ).lower()
+    quality = assess_request_quality(request)
+    if int(quality["score"]) < 55:
+        return "need_context"
     if request.get("goal") == "Not provided" or request.get("question") == "Not provided":
         return "need_context"
     if request.get("context") == "No extra context":
@@ -610,6 +731,9 @@ def suggest_quick_reply_template(request: dict) -> str | None:
 
 
 def build_fast_route_hint(request: dict) -> str:
+    quality = assess_request_quality(request)
+    if int(quality["score"]) < 55:
+        return "Ask for one sharper round of context before giving a detailed answer."
     if request.get("goal") == "Not provided" and request.get("challenge") == "Not provided":
         return "Ask for one target outcome and one main blocker before going deeper."
     if request.get("question") == "Not provided":
@@ -624,6 +748,7 @@ def build_fast_route_hint(request: dict) -> str:
 
 
 def build_fast_read_section(request: dict, ticket_id: int | str) -> str:
+    quality = assess_request_quality(request)
     template_key = suggest_quick_reply_template(request)
     template_line = (
         f"Suggested quick reply: /quickreply {ticket_id} {template_key}"
@@ -632,10 +757,12 @@ def build_fast_read_section(request: dict, ticket_id: int | str) -> str:
     )
     return (
         "Fast read\n"
+        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
         f"Main ask: {trim_text(request['question'], 180)}\n"
         f"Wanted outcome: {trim_text(request['goal'], 140)}\n"
         f"Main blocker: {trim_text(request['challenge'], 140)}\n"
         f"Fastest route: {build_fast_route_hint(request)}\n"
+        f"Best improvement: {quality['improvement']}\n"
         f"{template_line}"
     )
 
@@ -857,6 +984,7 @@ def build_tags_message() -> str:
         "",
         "Use {{tag_name}} inside /reply, /replypublic, /quickreply, or an admin private-thread reply.",
         "Priority: saved tag in bot -> TAG_ value from .env -> built-in tag.",
+        "Use the copy buttons below to place a tag quickly.",
     ]
 
     sections = [
@@ -892,6 +1020,14 @@ def build_tags_message() -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def build_tags_markup() -> InlineKeyboardMarkup:
+    tag_names = sorted(
+        set(build_builtin_tags()) | set(read_env_tags()) | set(read_saved_tags()) | {"ticket", "ticket_id"}
+    )
+    buttons = [build_copy_button(f"{{{{{name}}}}}", f"{{{{{name}}}}}") for name in tag_names]
+    return InlineKeyboardMarkup(chunk_items(buttons, 2))
 
 
 def build_availability_message() -> str:
@@ -955,11 +1091,12 @@ def classify_queue_state(submission: dict) -> str:
     return "waiting_user"
 
 
-def queue_priority_key(submission: dict) -> tuple[int, datetime, int]:
+def queue_priority_key(submission: dict) -> tuple[int, int, datetime, int]:
     request = normalize_payload(submission.get("request", {}))
     urgency_rank = {"High": 0, "Normal": 1, "Low": 2}.get(request.get("urgency", "Normal"), 1)
+    quality = assess_request_quality(request)
     created_at = parse_iso_datetime(submission.get("created_at")) or datetime.max.replace(tzinfo=timezone.utc)
-    return urgency_rank, created_at, int(submission.get("id", 0))
+    return urgency_rank, -int(quality["score"]), created_at, int(submission.get("id", 0))
 
 
 def build_dashboard_message(submissions: list[dict]) -> str:
@@ -975,18 +1112,24 @@ def build_dashboard_message(submissions: list[dict]) -> str:
     waiting_public: list[dict] = []
     waiting_user: list[dict] = []
     high_priority = 0
+    answer_ready = 0
 
     for submission in submissions:
         state = classify_queue_state(submission)
         request = normalize_payload(submission.get("request", {}))
+        quality = assess_request_quality(request)
         if state == "awaiting_private":
             waiting_private.append(submission)
             if request.get("urgency") == "High":
                 high_priority += 1
+            if int(quality["score"]) >= 80:
+                answer_ready += 1
         elif state == "awaiting_public":
             waiting_public.append(submission)
             if request.get("urgency") == "High":
                 high_priority += 1
+            if int(quality["score"]) >= 80:
+                answer_ready += 1
         elif state == "waiting_user":
             waiting_user.append(submission)
 
@@ -994,8 +1137,9 @@ def build_dashboard_message(submissions: list[dict]) -> str:
     preview_lines = []
     for submission in waiting_on_you[:6]:
         request = normalize_payload(submission.get("request", {}))
+        quality = assess_request_quality(request)
         preview_lines.append(
-            f"#{submission['id']} | {answer_mode_policy_short(request.get('answer_mode', 'private'))} | "
+            f"#{submission['id']} | {quality['grade']} | {answer_mode_policy_short(request.get('answer_mode', 'private'))} | "
             f"{request['urgency']} | {trim_text(request['track'], 20)} | "
             f"{trim_text(request['question'], 52)} | {format_age_short(submission.get('created_at'))}"
         )
@@ -1010,6 +1154,7 @@ def build_dashboard_message(submissions: list[dict]) -> str:
         f"Public queue: {len(waiting_public)}\n"
         f"Waiting on user: {len(waiting_user)}\n"
         f"High priority waiting: {high_priority}\n\n"
+        f"Answer-ready now: {answer_ready}\n\n"
         f"Response windows\n{availability_text}\n\n"
         f"Next tickets\n{preview_text}\n\n"
         "Fast actions\n"
@@ -1034,9 +1179,17 @@ def build_templates_message() -> str:
             "/quickreply <ticket> <template> hide",
             "You can also reply to a private ticket message with /quickreply <template> [show|hide].",
             "Saved tags like {{website}} are expanded before sending.",
+            "Use the copy buttons below when you are replying to a ticket message.",
         ]
     )
     return "\n".join(lines)
+
+
+def build_templates_markup() -> InlineKeyboardMarkup:
+    buttons = [
+        build_copy_button(key, f"/quickreply {key}") for key in FAST_REPLY_TEMPLATES
+    ]
+    return InlineKeyboardMarkup(chunk_items(buttons, 2))
 
 
 def build_public_notice(ticket_id: int, link: str) -> str:
@@ -1059,6 +1212,28 @@ def build_public_answer_message(ticket_id: int, answer_text: str, link: str) -> 
     elif DISCUSSION_GROUP_URL or PUBLIC_CHANNEL_URL:
         lines.extend(["", f"Open: {build_public_destination_text()}"])
     return "\n".join(lines)
+
+
+def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
+    request = normalize_payload(record.get("request", {}))
+    ticket_id = int(record.get("id", 0))
+    buttons = [
+        build_copy_button("Copy /reply", f"/reply {ticket_id} "),
+        build_copy_button("Copy /status", f"/status {ticket_id}"),
+    ]
+
+    suggested_template = suggest_quick_reply_template(request)
+    if suggested_template:
+        buttons.append(build_copy_button("Copy quick reply", f"/quickreply {ticket_id} {suggested_template}"))
+    else:
+        buttons.append(build_copy_button("Copy queue", f"/quickreply {ticket_id} queue"))
+        buttons.append(build_copy_button("Copy need context", f"/quickreply {ticket_id} need_context"))
+
+    if allows_public_reply(request.get("answer_mode", "private")):
+        buttons.append(build_copy_button("Copy /replypublic", f"/replypublic {ticket_id} "))
+        buttons.append(build_copy_button("Copy /markpublic", f"/markpublic {ticket_id} https://"))
+
+    return InlineKeyboardMarkup(chunk_items(buttons, 2))
 
 
 def find_submission(ticket_id: int) -> tuple[list[dict], int | None, dict | None]:
@@ -1260,6 +1435,7 @@ def format_discussion_ticket(record: dict) -> str:
 
 def build_summary(payload: dict) -> str:
     request = normalize_payload(payload)
+    quality = assess_request_quality(request)
     return (
         "Review your mentorship request:\n\n"
         f"Topic: {request['track']}\n"
@@ -1267,6 +1443,8 @@ def build_summary(payload: dict) -> str:
         f"Urgency: {request['urgency']}\n"
         f"Requested reply mode: {format_answer_mode(request['answer_mode'])}\n"
         f"Reply policy: {answer_mode_policy_text(request['answer_mode'])}\n\n"
+        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
+        f"Best improvement: {quality['improvement']}\n\n"
         f"Contact in mentor view: {format_contact_visibility(request['contact_visibility'])}\n\n"
         f"Goal:\n{request['goal']}\n\n"
         f"Challenge:\n{request['challenge']}\n\n"
@@ -1278,6 +1456,7 @@ def build_summary(payload: dict) -> str:
 
 def build_user_status(record: dict) -> str:
     request = normalize_payload(record.get("request", {}))
+    quality = assess_request_quality(request)
     lines = [
         f"Ticket #{record['id']}",
         f"Status: {format_status(record.get('status', 'open'))}",
@@ -1285,6 +1464,7 @@ def build_user_status(record: dict) -> str:
         f"Topic: {request.get('track', 'General')}",
         f"Requested reply mode: {format_answer_mode(request.get('answer_mode', 'private'))}",
         f"Reply policy: {answer_mode_policy_text(request.get('answer_mode', 'private'))}",
+        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})",
         f"Contact in mentor view: {format_contact_visibility(request.get('contact_visibility', 'shown'))}",
     ]
 
@@ -1359,6 +1539,7 @@ async def send_private_ticket_message(
             chat_id=user_id,
             text=message_text,
             reply_to_message_id=reply_target_message_id,
+            link_preview_options=NO_PREVIEW,
         )
     except TelegramError:
         logger.exception("Failed to send private ticket message")
@@ -1453,11 +1634,17 @@ async def deliver_submission(
         return False
 
     record = build_submission_record(update.effective_user, payload, source)
+    quality = assess_request_quality(record["request"])
     discussion_group_id = context.application.bot_data.get("discussion_group_id")
     discussion_posted = False
 
     try:
-        admin_ticket_message = await context.bot.send_message(chat_id=admin_id, text=format_submission(record))
+        admin_ticket_message = await context.bot.send_message(
+            chat_id=admin_id,
+            text=format_submission(record),
+            reply_markup=build_ticket_actions_markup(record),
+            link_preview_options=NO_PREVIEW,
+        )
     except TelegramError:
         logger.exception("Failed to forward mentorship request")
         await update.message.reply_text(
@@ -1501,9 +1688,12 @@ async def deliver_submission(
         f"Ticket: #{record['id']}\n"
         f"Requested reply mode: {format_answer_mode(record['request']['answer_mode'])}\n"
         f"Reply policy: {answer_mode_policy_text(record['request']['answer_mode'])}\n"
+        f"Request grade: {quality['grade']} ({quality['score']}/100, {quality['label']})\n"
+        f"Best improvement: {quality['improvement']}\n"
         f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
         f"{public_note}",
         reply_markup=build_keyboard(MAIN_MENU),
+        link_preview_options=NO_PREVIEW,
     )
     record["private_thread"] = {
         "admin_chat_id": admin_id,
@@ -1531,6 +1721,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             build_dashboard_message(read_submissions()),
             reply_markup=build_keyboard(ADMIN_MENU),
+            link_preview_options=NO_PREVIEW,
         )
         return
 
@@ -1557,7 +1748,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(
             "/adminstatus shows the current admin.\n"
             "/dashboard shows the current mentor queue and reply slots.\n"
+            "New tickets are graded for readiness so specific cases rise to the top faster.\n"
             "/templates lists the ready private reply templates.\n"
+            "Templates and tags use Telegram copy buttons for faster reuse.\n"
             "/tags lists saved shortcuts like {{website}}.\n"
             "/savetag stores a reusable reply tag.\n"
             "/deletetag removes a saved reply tag.\n"
@@ -1576,13 +1769,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/markpublic <ticket> [link] marks a public answer.\n"
             "/start refreshes the admin view.",
             reply_markup=build_keyboard(ADMIN_MENU),
+            link_preview_options=NO_PREVIEW,
         )
         return
 
     await update.message.reply_text(
         "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
         f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
-        f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n\n"
+        f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n"
+        "More specific requests are graded as more answer-ready and usually get faster, cleaner replies.\n\n"
         "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
         f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
         f"{PUBLIC_ANSWER_LABEL} shares only an anonymous, minimal public version and may still be answered privately if that is more useful.\n"
@@ -1873,7 +2068,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Answered publicly: {status_counter.get('answered_public', 0)}\n\n"
         f"Private reply preference: {answer_mode_counter.get('private', 0)}\n"
         f"Public answer preference: {answer_mode_counter.get('public', 0)}\n\n"
-        f"Top topics:\n{top_tracks}"
+        f"Top topics:\n{top_tracks}",
+        link_preview_options=NO_PREVIEW,
     )
 
 
@@ -1888,6 +2084,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(
         build_dashboard_message(read_submissions()),
         reply_markup=build_keyboard(ADMIN_MENU),
+        link_preview_options=NO_PREVIEW,
     )
 
 
@@ -1901,7 +2098,8 @@ async def templates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await update.message.reply_text(
         build_templates_message(),
-        reply_markup=build_keyboard(ADMIN_MENU),
+        reply_markup=build_templates_markup(),
+        link_preview_options=NO_PREVIEW,
     )
 
 
@@ -1912,7 +2110,11 @@ async def availability_command(update: Update, context: ContextTypes.DEFAULT_TYP
     reply_markup = build_keyboard(ADMIN_MENU) if is_admin(
         context, update.effective_user.id if update.effective_user else None
     ) else build_keyboard(MAIN_MENU)
-    await update.message.reply_text(build_availability_message(), reply_markup=reply_markup)
+    await update.message.reply_text(
+        build_availability_message(),
+        reply_markup=reply_markup,
+        link_preview_options=NO_PREVIEW,
+    )
 
 
 async def tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1925,7 +2127,8 @@ async def tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await update.message.reply_text(
         build_tags_message(),
-        reply_markup=build_keyboard(ADMIN_MENU),
+        reply_markup=build_tags_markup(),
+        link_preview_options=NO_PREVIEW,
     )
 
 
@@ -2418,7 +2621,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("You can only check your own tickets.")
         return
 
-    await update.message.reply_text(build_user_status(submission))
+    await update.message.reply_text(build_user_status(submission), link_preview_options=NO_PREVIEW)
 
 
 async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2446,14 +2649,6 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _, _, submission = find_submission(ticket_id)
     if submission is None:
         await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
-        return
-
-    request = normalize_payload(submission.get("request", {}))
-    if not allows_public_reply(request.get("answer_mode", "private")):
-        await update.message.reply_text(
-            public_reply_block_message(ticket_id),
-            reply_markup=build_keyboard(ADMIN_MENU),
-        )
         return
 
     answer_text, missing_tags = expand_saved_tags(
@@ -2621,6 +2816,8 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
                 "Reply to this message to answer through the bot."
             ),
             reply_to_message_id=thread_context.get("remote_reply_to_message_id"),
+            reply_markup=build_ticket_actions_markup(submission),
+            link_preview_options=NO_PREVIEW,
         )
     except TelegramError:
         logger.exception("Failed to relay user private-thread reply")
@@ -2702,7 +2899,11 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
 
     try:
-        await context.bot.send_message(chat_id=user_id, text=notice_text)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=notice_text,
+            link_preview_options=NO_PREVIEW,
+        )
     except TelegramError:
         logger.exception("Failed to notify the user about the public answer")
         await update.message.reply_text(
@@ -2773,7 +2974,11 @@ async def mark_public(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     notice_text = build_public_notice(ticket_id, public_link)
 
     try:
-        await context.bot.send_message(chat_id=user_id, text=notice_text)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=notice_text,
+            link_preview_options=NO_PREVIEW,
+        )
     except TelegramError:
         logger.exception("Failed to send public-answer notice")
         await update.message.reply_text(
@@ -2828,7 +3033,11 @@ async def handle_discussion_reply(update: Update, context: ContextTypes.DEFAULT_
     notice_text = build_public_answer_message(ticket_id, answer_text, public_link)
 
     try:
-        await context.bot.send_message(chat_id=user_id, text=notice_text)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=notice_text,
+            link_preview_options=NO_PREVIEW,
+        )
     except TelegramError:
         logger.exception("Failed to send discussion-group public answer")
         await update.message.reply_text(
@@ -2993,7 +3202,7 @@ def main() -> None:
     app.add_handler(CommandHandler("cancel", cancel_request))
 
     logger.info("Mentorship bot is starting")
-    app.run_polling()
+    app.run_polling(allowed_updates=["message"])
 
 
 if __name__ == "__main__":

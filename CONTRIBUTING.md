@@ -13,6 +13,7 @@ This repository contains a Telegram mentorship bot with:
 - Ticket tracking
 - Private-thread reply routing through the bot
 - Admin dashboard and ready-reply templates
+- Request grading and copy-ready admin shortcuts
 - Saved tags for reusable links and text shortcuts
 - Discussion-group and channel publishing
 
@@ -78,8 +79,10 @@ python bot.py
 7. Test `/dashboard`, `/templates`, `/tags`, `/quickreply`, `/reply`, `/replypublic`, `/markpublic`, and `/status`.
 8. Confirm a private-mode ticket cannot be closed publicly through `/replypublic`, `/markpublic`, or a discussion reply.
 9. Confirm a public-mode ticket can still receive a private reply and continue through bot-thread replies.
-10. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
-11. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
+10. Confirm new tickets show a readiness grade and fast-read section for the admin.
+11. Confirm template and tag screens expose Telegram copy buttons for quick reuse.
+12. Save a tag with `/savetag website https://your-site.example` and confirm `{{website}}` expands in admin replies.
+13. If discussion support is enabled, reply to a mirrored public ticket in the discussion group and confirm the user is notified.
 
 ## Git workflow
 
