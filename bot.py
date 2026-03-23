@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from telegram import (
@@ -70,6 +70,13 @@ MENTOR_IDENTITY_TEXT = decode_env_text(os.getenv("MENTOR_IDENTITY_TEXT") or "")
 MENTOR_IDENTITY_DEFAULT = (os.getenv("MENTOR_IDENTITY_DEFAULT") or "hidden").strip().lower()
 REQUIRE_PERSISTENT_STORAGE_RAW = (os.getenv("REQUIRE_PERSISTENT_STORAGE") or "").strip().lower()
 MENTOR_LOGO_URL = normalize_https_url(os.getenv("MENTOR_LOGO_URL") or "")
+CALENDLY_URL = normalize_https_url(os.getenv("CALENDLY_URL") or "")
+CALENDLY_LABEL = (os.getenv("CALENDLY_LABEL") or "Book a meeting").strip() or "Book a meeting"
+CALENDLY_TEXT = decode_env_text(
+    os.getenv("CALENDLY_TEXT")
+    or "Use this when a live meeting is the fastest way to move the case forward.\n"
+    "Best for decision-heavy questions, detailed reviews, or cases where text back-and-forth would cost more time."
+)
 CTA_CHANNEL_URL = normalize_https_url(os.getenv("CTA_CHANNEL_URL") or "")
 CTA_WEBSITE_URL = normalize_https_url(os.getenv("CTA_WEBSITE_URL") or "")
 CTA_EXTRA_TEXT = decode_env_text(os.getenv("CTA_EXTRA_TEXT") or "")
@@ -103,6 +110,7 @@ GUIDED_REQUEST_LABEL = "Guided request"
 QUICK_QUESTION_LABEL = "Quick question"
 HOW_IT_WORKS_LABEL = "How it works"
 RESPONSE_TIMES_LABEL = "Response times"
+BOOK_MEETING_LABEL = "Book a meeting"
 DASHBOARD_LABEL = "Dashboard"
 TEMPLATES_LABEL = "Templates"
 TAGS_LABEL = "Tags"
@@ -122,7 +130,7 @@ PICK_DISCUSSION_LABEL = "Choose discussion group"
 CHANNEL_PICKER_REQUEST_ID = 7001
 DISCUSSION_PICKER_REQUEST_ID = 7002
 
-MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL, RESPONSE_TIMES_LABEL]]
+MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL, RESPONSE_TIMES_LABEL], [BOOK_MEETING_LABEL]]
 ADMIN_MENU = [[DASHBOARD_LABEL, TEMPLATES_LABEL], [TAGS_LABEL, RESPONSE_TIMES_LABEL]]
 TRACK_MENU = [
     ["Research direction", "Technical guidance"],
@@ -155,6 +163,7 @@ USER_COMMANDS = [
     BotCommand("ask", "Start a guided mentorship request"),
     BotCommand("quick", "Send a one-message question"),
     BotCommand("followup", "Continue a public ticket by ticket ID"),
+    BotCommand("meeting", "Open the Calendly meeting link"),
     BotCommand("availability", "See response windows"),
     BotCommand("help", "See how the bot works"),
     BotCommand("muteupdates", "Stop channel news broadcasts in the bot"),
@@ -181,6 +190,8 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("channelstatus", "Show the public answer channel"),
     BotCommand("stats", "Show mentorship request statistics"),
     BotCommand("reply", "Send a private answer to a ticket"),
+    BotCommand("sendmeeting", "Send a ticket-specific meeting invite"),
+    BotCommand("meetingstatus", "Show Calendly booking setup"),
     BotCommand("quickreply", "Send a ready private reply template"),
     BotCommand("replypublic", "Post a public answer through the bot"),
     BotCommand("markpublic", "Mark a ticket as answered publicly"),
@@ -257,6 +268,14 @@ FAST_REPLY_TEMPLATES = {
         "body": (
             "This looks like a good candidate for a short public answer because others may benefit too.\n"
             "If needed, I can still keep the public version anonymous and minimal."
+        ),
+    },
+    "meeting_invite": {
+        "title": "Meeting invite",
+        "body": (
+            "A live meeting looks like the fastest route for this case.\n"
+            "Book here: {{meeting_link}}\n"
+            "If the booking form has notes, mention ticket #{{ticket}} so the meeting stays tied to this case."
         ),
     },
 }
@@ -1137,6 +1156,123 @@ def build_public_destination_text() -> str:
     return " or ".join(destinations)
 
 
+def calendly_url() -> str:
+    if CALENDLY_URL:
+        return CALENDLY_URL
+    return normalize_https_url(read_env_tags().get("booking", ""))
+
+
+def booking_enabled() -> bool:
+    return bool(calendly_url())
+
+
+def add_query_params(url: str, params: dict[str, str]) -> str:
+    normalized_url = normalize_https_url(url)
+    if not normalized_url:
+        return ""
+
+    parsed = urlsplit(normalized_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in params.items():
+        if key and value:
+            query[key] = value
+    return urlunsplit(
+        (
+            "https",
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def build_meeting_link(ticket_id: int | None = None, submission: dict | None = None) -> str:
+    base_url = calendly_url()
+    if not base_url:
+        return ""
+
+    params = {
+        "utm_source": "telegram-bot",
+        "utm_medium": "mentorship",
+    }
+    if ticket_id is not None:
+        params["utm_campaign"] = f"ticket-{ticket_id}"
+    if submission is not None:
+        request = normalize_payload(submission.get("request", {}))
+        params["utm_content"] = normalize_answer_mode(request.get("answer_mode", "private"))
+    return add_query_params(base_url, params)
+
+
+def build_ticket_tags(ticket_id: int, submission: dict | None = None) -> dict[str, str]:
+    tags = {
+        "ticket": str(ticket_id),
+        "ticket_id": str(ticket_id),
+    }
+    meeting_link = build_meeting_link(ticket_id, submission)
+    if meeting_link:
+        tags["booking"] = meeting_link
+        tags["meeting_link"] = meeting_link
+        tags["booking_link"] = meeting_link
+        tags["calendly"] = meeting_link
+    return tags
+
+
+def build_meeting_message(ticket_id: int | None = None, submission: dict | None = None) -> str:
+    link = build_meeting_link(ticket_id, submission)
+    if not link:
+        return (
+            "Meeting booking is not configured yet.\n"
+            "The mentor can enable it by setting CALENDLY_URL or a booking tag."
+        )
+
+    lines = [CALENDLY_LABEL, "", CALENDLY_TEXT]
+    if ticket_id is not None:
+        lines.extend(
+            [
+                "",
+                f"Ticket: #{ticket_id}",
+                f"Book here: {link}",
+                f"If the booking form has notes, mention ticket #{ticket_id}.",
+            ]
+        )
+    else:
+        lines.extend(["", f"Book here: {link}"])
+    return "\n".join(lines)
+
+
+def build_meeting_markup(link: str, ticket_id: int | None = None, admin: bool = False) -> InlineKeyboardMarkup | None:
+    buttons: list[InlineKeyboardButton] = []
+    if link:
+        buttons.append(build_copy_button("Copy meeting link", link))
+    if admin and ticket_id is not None:
+        buttons.append(build_copy_button("Copy /sendmeeting", f"/sendmeeting {ticket_id}"))
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(chunk_items(buttons, 2))
+
+
+def build_meeting_status_message() -> str:
+    base_url = calendly_url()
+    if not base_url:
+        return (
+            "Calendly booking is not configured.\n\n"
+            "Set CALENDLY_URL in Railway or .env, or define TAG_BOOKING, to enable booking links.\n"
+            "Ticket-specific meeting links will then add tracking parameters automatically."
+        )
+
+    return (
+        "Meeting booking status\n\n"
+        f"Label: {CALENDLY_LABEL}\n"
+        f"Base link: {base_url}\n\n"
+        "Ticket-specific links add tracking parameters so bookings can stay tied to the right ticket.\n"
+        "Fast actions\n"
+        "/sendmeeting <ticket>\n"
+        "/meeting <ticket>\n"
+        "{{meeting_link}}"
+    )
+
+
 def cta_channel_url() -> str:
     return CTA_CHANNEL_URL or PUBLIC_CHANNEL_URL
 
@@ -1147,13 +1283,16 @@ def cta_website_url() -> str:
     return normalize_https_url(read_env_tags().get("website", ""))
 
 
-def build_user_cta_lines() -> list[str]:
+def build_user_cta_lines(ticket_id: int | None = None, submission: dict | None = None) -> list[str]:
     lines: list[str] = []
     channel_url = cta_channel_url()
     website_url = cta_website_url()
+    booking_url = build_meeting_link(ticket_id, submission) or calendly_url()
     if channel_url:
         lines.append(f"Follow updates: {channel_url}")
     lines.append("Use this bot again any time for focused mentorship requests.")
+    if booking_url:
+        lines.append(f"Book a meeting: {booking_url}")
     if website_url:
         lines.append(f"More about the mentor: {website_url}")
     if CTA_EXTRA_TEXT:
@@ -1161,8 +1300,8 @@ def build_user_cta_lines() -> list[str]:
     return lines
 
 
-def append_user_cta(text: str) -> str:
-    cta_lines = build_user_cta_lines()
+def append_user_cta(text: str, ticket_id: int | None = None, submission: dict | None = None) -> str:
+    cta_lines = build_user_cta_lines(ticket_id, submission)
     if not cta_lines:
         return text
     return f"{text}\n\nQuick links\n" + "\n".join(cta_lines)
@@ -1259,6 +1398,12 @@ def build_builtin_tags() -> dict[str, str]:
         tags["identity"] = identity
     if MENTOR_LOGO_URL:
         tags["logo"] = MENTOR_LOGO_URL
+    booking_url = calendly_url()
+    if booking_url:
+        tags["booking"] = booking_url
+        tags["booking_link"] = booking_url
+        tags["calendly"] = booking_url
+        tags["meeting_link"] = booking_url
     if PUBLIC_CHANNEL_URL:
         tags["public_channel"] = PUBLIC_CHANNEL_URL
         tags["channel"] = PUBLIC_CHANNEL_URL
@@ -1361,6 +1506,7 @@ def build_tags_message() -> str:
             "Dynamic",
             "{{ticket}} -> current ticket number",
             "{{ticket_id}} -> current ticket number",
+            "{{meeting_link}} -> ticket-specific Calendly link when a ticket number is available",
         ]
     )
 
@@ -1385,7 +1531,7 @@ def build_tags_markup() -> InlineKeyboardMarkup:
 
 def build_availability_message() -> str:
     availability_text, _ = expand_saved_tags(MENTOR_AVAILABILITY_TEXT)
-    return (
+    message = (
         "What to expect\n\n"
         "This mentorship is free and designed to stay accurate, practical, and to the point.\n"
         "Requests are handled in focused batches so time can be used well across everyone.\n\n"
@@ -1396,6 +1542,9 @@ def build_availability_message() -> str:
         "Best way to get a strong answer\n"
         "Send one clear goal, one main blocker, and one direct question."
     )
+    if booking_enabled():
+        message += "\n\nIf a live session is the faster route, use /meeting."
+    return message
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
@@ -1564,6 +1713,7 @@ def build_dashboard_message(submissions: list[dict]) -> str:
         "/quickreply <ticket> queue\n"
         "/quickreply <ticket> need_context\n"
         "/quickreply <ticket> queue show"
+        + ("\n/sendmeeting <ticket>" if booking_enabled() else "")
     )
 
 
@@ -1579,7 +1729,7 @@ def build_templates_message() -> str:
             "/quickreply <ticket> <template> show",
             "/quickreply <ticket> <template> hide",
             "You can also reply to a private ticket message with /quickreply <template> [show|hide].",
-            "Saved tags like {{website}} are expanded before sending.",
+            "Saved tags like {{website}} and ticket-aware tags like {{meeting_link}} are expanded before sending.",
             "Use the copy buttons below when you are replying to a ticket message.",
         ]
     )
@@ -1606,7 +1756,9 @@ def build_public_notice(ticket_id: int, link: str, mode: str | None = None) -> s
             "You can keep using the same ticket until the mentor ends it.",
         ]
     )
-    return append_user_cta("\n".join(lines))
+    if booking_enabled():
+        lines.append(f"If a live session is better, use /meeting {ticket_id}.")
+    return append_user_cta("\n".join(lines), ticket_id)
 
 
 def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mode: str | None = None) -> str:
@@ -1625,7 +1777,9 @@ def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mod
             "You can keep using the same ticket until the mentor ends it.",
         ]
     )
-    return append_user_cta("\n".join(lines))
+    if booking_enabled():
+        lines.append(f"If a live session is better, use /meeting {ticket_id}.")
+    return append_user_cta("\n".join(lines), ticket_id)
 
 
 def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
@@ -1646,6 +1800,9 @@ def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
     if allows_public_reply(request.get("answer_mode", "private")):
         buttons.append(build_copy_button("Copy /replypublic", f"/replypublic {ticket_id} "))
         buttons.append(build_copy_button("Copy /markpublic", f"/markpublic {ticket_id} https://"))
+
+    if booking_enabled():
+        buttons.append(build_copy_button("Copy /sendmeeting", f"/sendmeeting {ticket_id}"))
 
     buttons.append(build_copy_button("Copy /endticket", f"/endticket {ticket_id}"))
 
@@ -1801,6 +1958,8 @@ def format_submission(record: dict) -> str:
         f"/reply {ticket_id} your private answer",
         f"/endticket {ticket_id}",
     ]
+    if booking_enabled():
+        action_lines.append(f"/sendmeeting {ticket_id}")
     suggested_template = suggest_quick_reply_template(request)
     if suggested_template:
         action_lines.append(f"/quickreply {ticket_id} {suggested_template}")
@@ -1914,6 +2073,8 @@ def build_user_status(record: dict) -> str:
     elif public_followup_enabled(record):
         lines.append(f"Continue this public ticket with {public_followup_command(ticket_id)}.")
         lines.append("Public tickets end automatically after 3 days without a follow-up.")
+    if booking_enabled() and not ticket_is_ended(record):
+        lines.append(f"Book a meeting for this case with /meeting {ticket_id}.")
     if private_thread_enabled(record) and not ticket_is_ended(record):
         lines.append("Reply to the private ticket thread in the bot to continue the same conversation.")
         lines.append("After the latest private reply, the ticket ends automatically after 1 day without a reply.")
@@ -1964,7 +2125,7 @@ async def send_private_ticket_message(
             if response.get("direction") == "mentor_to_user"
         ]
         if not prior_mentor_replies:
-            message_text = append_user_cta(message_text)
+            message_text = append_user_cta(message_text, ticket_id, submission)
 
     reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
     try:
@@ -2171,7 +2332,9 @@ async def deliver_submission(
             f"Best improvement: {quality['improvement']}\n"
             f"Contact in mentor view: {format_contact_visibility(record['request']['contact_visibility'])}"
             f"{public_note}\n"
-            "If you do not want channel news mirrored here, use /muteupdates. Use /resumeupdates any time to turn them back on."
+            "If you do not want channel news mirrored here, use /muteupdates. Use /resumeupdates any time to turn them back on.",
+            record["id"],
+            record,
         ),
         reply_markup=build_keyboard(MAIN_MENU),
         link_preview_options=NO_PREVIEW,
@@ -2339,7 +2502,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "This is a free service designed to stay practical, concise, and sustainable.\n\n"
             "You can ask about research direction, technical guidance, project review, academic growth, career questions, startup ideas, or your own custom topic.\n\n"
             f"{GUIDED_REQUEST_LABEL} explains each step and helps you shape a stronger request.\n"
-            f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n\n"
+            f"{QUICK_QUESTION_LABEL} turns one message into a tracked ticket.\n"
+            f"{BOOK_MEETING_LABEL} opens the Calendly link when a live session is the better use of time.\n\n"
             "The bot receives your Telegram display name, username, and routing ID so replies can reach you.\n"
             "Before submitting, you can choose whether those details stay visible in the mentor view.\n\n"
             f"{PRIVATE_REPLY_LABEL} stays inside the bot and cannot be turned into a public answer later.\n"
@@ -2373,6 +2537,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/channelstatus shows the public answer channel.\n"
             "Normal posts from the public channel are mirrored to bot users who are not channel members.\n"
             "/availability shows the public response-window message.\n"
+            "/meetingstatus shows the current Calendly setup.\n"
             f"{PRIVATE_REPLY_LABEL} tickets are locked private and cannot be answered publicly.\n"
             f"{PUBLIC_ANSWER_LABEL} tickets may still be answered privately when that is more useful.\n"
             "After the latest private reply, a private ticket ends automatically after 1 day without a reply.\n"
@@ -2380,6 +2545,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/stats shows mentorship request counts.\n"
             "Reply to a private ticket message to continue the private conversation through the bot.\n"
             "/reply <ticket> <message> still sends a private answer if you prefer commands.\n"
+            "/sendmeeting <ticket> [note] sends a ticket-specific meeting invite.\n"
             "/replypublic <ticket> <message> posts a public answer through the bot.\n"
             "/markpublic <ticket> [link] marks a public answer.\n"
             "/endticket <ticket> [note] ends a ticket and stops further replies.\n"
@@ -2394,6 +2560,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "This bot is designed for student and early-career mentorship across research direction, technical guidance, project review, academic growth, career planning, startup advice, and related custom topics.\n\n"
             f"{GUIDED_REQUEST_LABEL} asks for your topic, stage, goal, blocker, and urgency so the mentor can answer with the right depth.\n"
             f"{QUICK_QUESTION_LABEL} is the fastest path if you already know your one main question.\n"
+            f"{BOOK_MEETING_LABEL} opens the Calendly booking link if a live session is the fastest route.\n"
             "More specific requests are graded as more answer-ready and usually get faster, cleaner replies.\n\n"
             "The bot receives your Telegram display name, username, and routing ID to deliver answers. You can keep those visible to the mentor or hide them in the mentor view.\n\n"
             f"{PRIVATE_REPLY_LABEL} keeps the request and answer inside the bot and locks the ticket to private-only replies.\n"
@@ -2406,6 +2573,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "Use /muteupdates to stop those updates or /resumeupdates to turn them back on.\n"
             f"{RESPONSE_TIMES_LABEL} or /availability shows how reply windows work.\n"
             "Use /status <ticket_number> to check one of your ticket statuses.\n"
+            "Use /meeting or /meeting <ticket_number> to open the booking link when a live session is needed.\n"
             "Use /cancel any time during the guided flow."
         ),
         reply_markup=build_keyboard(MAIN_MENU),
@@ -2434,7 +2602,7 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Admin saved successfully.\n"
         "The mentorship bot is ready to receive requests.\n"
         "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.\n"
-        "Use /storagestatus to confirm queue persistence, /dashboard to keep the queue under control, /templates for fast replies, and /tags for saved shortcuts.",
+        "Use /storagestatus to confirm queue persistence, /dashboard to keep the queue under control, /templates for fast replies, /tags for saved shortcuts, and /meetingstatus to confirm Calendly booking.",
         reply_markup=build_keyboard(ADMIN_MENU),
     )
 
@@ -3264,8 +3432,127 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     message_text = build_user_status(submission)
     if is_ticket_owner:
-        message_text = append_user_cta(message_text)
+        message_text = append_user_cta(message_text, ticket_id, submission)
     await update.message.reply_text(message_text, link_preview_options=NO_PREVIEW)
+
+
+async def meeting_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    admin_view = is_admin(context, update.effective_user.id)
+    if not booking_enabled():
+        await update.message.reply_text(
+            build_meeting_message(),
+            reply_markup=build_keyboard(ADMIN_MENU if admin_view else MAIN_MENU),
+            link_preview_options=NO_PREVIEW,
+        )
+        return
+
+    ticket_id: int | None = None
+    submission: dict | None = None
+    if context.args:
+        ticket_id = parse_ticket_id(context.args[0])
+        if ticket_id is None:
+            await update.message.reply_text("Usage: /meeting [ticket_number]")
+            return
+        _, _, submission = find_submission(ticket_id)
+        if submission is None:
+            await update.message.reply_text(f"Ticket #{ticket_id} was not found.")
+            return
+        if not admin_view and submission.get("user", {}).get("id") != update.effective_user.id:
+            await update.message.reply_text("You can only open booking links for your own tickets.")
+            return
+
+    await update.message.reply_text(
+        build_meeting_message(ticket_id, submission),
+        reply_markup=build_meeting_markup(build_meeting_link(ticket_id, submission), ticket_id, admin_view),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def meeting_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    base_url = calendly_url()
+    await update.message.reply_text(
+        build_meeting_status_message(),
+        reply_markup=build_meeting_markup(base_url, admin=True),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def send_meeting_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await update.message.reply_text("This command is available only to the admin.")
+        return
+
+    if not booking_enabled():
+        await update.message.reply_text(
+            "Calendly booking is not configured yet.\n"
+            "Set CALENDLY_URL or TAG_BOOKING first."
+        )
+        return
+
+    ticket_id, submission, args_offset = resolve_admin_ticket_target(update, context)
+    if ticket_id is None or submission is None:
+        await update.message.reply_text(
+            "Usage: /sendmeeting <ticket_number> [optional note]\n"
+            "You can also reply to an admin-side ticket message with /sendmeeting [optional note]."
+        )
+        return
+    if ticket_is_ended(submission):
+        await update.message.reply_text(ended_ticket_message(ticket_id))
+        return
+
+    extra_tags = build_ticket_tags(ticket_id, submission)
+    meeting_note = " ".join(context.args[args_offset:]).strip()
+    if meeting_note:
+        meeting_note, missing_tags = expand_saved_tags(meeting_note, extra_tags)
+        if missing_tags:
+            await update.message.reply_text(
+                build_unknown_tags_message(missing_tags),
+                reply_markup=build_keyboard(ADMIN_MENU),
+            )
+            return
+
+    meeting_link = extra_tags.get("meeting_link", "")
+    lines = [f"Meeting invitation for ticket #{ticket_id}", "", CALENDLY_TEXT]
+    if meeting_note:
+        lines.extend(["", meeting_note])
+    lines.extend(
+        [
+            "",
+            f"Book here: {meeting_link}",
+            f"If the booking form has notes, mention ticket #{ticket_id}.",
+        ]
+    )
+    message_text = apply_identity_signature("\n".join(lines), default_identity_visibility())
+
+    sent, error_message = await send_private_ticket_message(
+        context,
+        submission,
+        ticket_id,
+        message_text,
+        update.message.message_id,
+        "mentor_to_user",
+    )
+    if not sent:
+        await update.message.reply_text(error_message)
+        return
+
+    await update.message.reply_text(
+        f"Meeting invite sent for ticket #{ticket_id}.",
+        reply_markup=build_keyboard(ADMIN_MENU),
+    )
 
 
 async def followup_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3360,7 +3647,9 @@ async def followup_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         append_user_cta(
             f"Your follow-up for ticket #{ticket_id} has been sent.\n"
-            "Use /status to track the same ticket."
+            "Use /status to track the same ticket.",
+            ticket_id,
+            submission,
         ),
         reply_markup=build_keyboard(MAIN_MENU),
         link_preview_options=NO_PREVIEW,
@@ -3389,9 +3678,10 @@ async def end_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     closing_note = " ".join(context.args[args_offset:]).strip()
     if closing_note:
+        extra_tags = build_ticket_tags(ticket_id, submission)
         closing_note, missing_tags = expand_saved_tags(
             closing_note,
-            {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+            extra_tags,
         )
         if missing_tags:
             await update.message.reply_text(
@@ -3411,7 +3701,7 @@ async def end_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         try:
             sent_message = await context.bot.send_message(
                 chat_id=user_id,
-                text=append_user_cta("\n".join(lines)),
+                text=append_user_cta("\n".join(lines), ticket_id, submission),
                 link_preview_options=NO_PREVIEW,
             )
             user_message_id = sent_message.message_id
@@ -3456,7 +3746,9 @@ async def auto_end_ticket_by_inactivity(application: Application, ticket_id: int
                 text=append_user_cta(
                     f"Ticket #{ticket_id} was ended automatically.\n\n"
                     f"{closing_note}\n\n"
-                    "Start a new ticket any time if you want help with a new or continued question."
+                    "Start a new ticket any time if you want help with a new or continued question.",
+                    ticket_id,
+                    submission,
                 ),
                 link_preview_options=NO_PREVIEW,
             )
@@ -3533,9 +3825,10 @@ async def reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(ended_ticket_message(ticket_id))
         return
 
+    extra_tags = build_ticket_tags(ticket_id, submission)
     answer_text, missing_tags = expand_saved_tags(
         answer_text,
-        {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+        extra_tags,
     )
     if missing_tags:
         await update.message.reply_text(
@@ -3605,9 +3898,10 @@ async def quick_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
     reply_text = apply_identity_signature(template["body"], identity_mode)
+    extra_tags = build_ticket_tags(ticket_id, submission)
     reply_text, missing_tags = expand_saved_tags(
         reply_text,
-        {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+        extra_tags,
     )
     if missing_tags:
         await update.message.reply_text(
@@ -3667,9 +3961,10 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
         return
 
     if thread_context["side"] == "admin":
+        extra_tags = build_ticket_tags(ticket_id, submission)
         reply_text, missing_tags = expand_saved_tags(
             reply_text,
-            {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+            extra_tags,
         )
         if missing_tags:
             await update.message.reply_text(
@@ -3765,9 +4060,10 @@ async def reply_public_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    extra_tags = build_ticket_tags(ticket_id, submission)
     answer_text, missing_tags = expand_saved_tags(
         answer_text,
-        {"ticket": str(ticket_id), "ticket_id": str(ticket_id)},
+        extra_tags,
     )
     if missing_tags:
         await update.message.reply_text(
@@ -4002,6 +4298,7 @@ def main() -> None:
     quick_question_pattern = rf"^{re.escape(QUICK_QUESTION_LABEL)}$"
     how_it_works_pattern = rf"^{re.escape(HOW_IT_WORKS_LABEL)}$"
     response_times_pattern = rf"^{re.escape(RESPONSE_TIMES_LABEL)}$"
+    book_meeting_pattern = rf"^{re.escape(BOOK_MEETING_LABEL)}$"
     dashboard_pattern = rf"^{re.escape(DASHBOARD_LABEL)}$"
     templates_pattern = rf"^{re.escape(TEMPLATES_LABEL)}$"
     tags_pattern = rf"^{re.escape(TAGS_LABEL)}$"
@@ -4026,6 +4323,7 @@ def main() -> None:
                 & ~filters.Regex(guided_request_pattern)
                 & ~filters.Regex(quick_question_pattern)
                 & ~filters.Regex(response_times_pattern)
+                & ~filters.Regex(book_meeting_pattern)
                 & ~filters.Regex(dashboard_pattern)
                 & ~filters.Regex(templates_pattern)
                 & ~filters.Regex(tags_pattern)
@@ -4052,6 +4350,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, remember_private_user), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("meeting", meeting_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("availability", availability_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("followup", followup_ticket, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("muteupdates", mute_updates, filters=filters.ChatType.PRIVATE))
@@ -4078,6 +4377,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, broadcast_channel_post))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reply", reply_ticket))
+    app.add_handler(CommandHandler("sendmeeting", send_meeting_invite))
+    app.add_handler(CommandHandler("meetingstatus", meeting_status_command))
     app.add_handler(CommandHandler("quickreply", quick_reply_ticket))
     app.add_handler(CommandHandler("replypublic", reply_public_ticket))
     app.add_handler(CommandHandler("markpublic", mark_public))
@@ -4099,6 +4400,9 @@ def main() -> None:
     )
     app.add_handler(
         MessageHandler(filters.Regex(response_times_pattern) & ~filters.REPLY, availability_command)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(book_meeting_pattern) & ~filters.REPLY, meeting_command)
     )
     app.add_handler(
         MessageHandler(filters.Regex(dashboard_pattern) & ~filters.REPLY, dashboard_command)

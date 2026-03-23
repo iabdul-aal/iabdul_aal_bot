@@ -7,6 +7,7 @@ Thanks for contributing to `telegram-mentorship-bot`.
 This repository contains a Telegram mentorship bot with:
 
 - Private mentorship requests
+- Optional Calendly booking flow
 - Flexible topic and stage intake
 - Optional hiding of Telegram contact details in mentor view
 - Anonymous public answer support
@@ -41,6 +42,9 @@ MENTOR_LOGO_URL=
 MENTOR_IDENTITY_DEFAULT=hidden
 REQUIRE_PERSISTENT_STORAGE=
 MENTOR_AVAILABILITY_TEXT=Replies are handled in planned batches.
+CALENDLY_URL=
+CALENDLY_LABEL=Book a meeting
+CALENDLY_TEXT=Use this when a live meeting is the fastest way to move the case forward.
 CTA_CHANNEL_URL=
 CTA_WEBSITE_URL=
 CTA_EXTRA_TEXT=
@@ -54,7 +58,8 @@ DATA_DIR=./data
 ```
 
 If `PUBLIC_CHANNEL_URL` or `DISCUSSION_GROUP_URL` are set, use public `https://...` links.
-`MENTOR_IDENTITY_TEXT`, `MENTOR_AVAILABILITY_TEXT`, and `CTA_EXTRA_TEXT` support `\n` for line breaks in `.env`.
+`MENTOR_IDENTITY_TEXT`, `MENTOR_AVAILABILITY_TEXT`, `CALENDLY_TEXT`, and `CTA_EXTRA_TEXT` support `\n` for line breaks in `.env`.
+`CALENDLY_URL` is the main booking setting. `TAG_BOOKING` can still be used as a fallback booking link.
 
 3. Install dependencies:
 
@@ -98,6 +103,8 @@ python bot.py
 18. End a ticket with `/endticket` and confirm later replies are blocked.
 19. Leave a private ticket waiting on the user for 1 day, and a public answered ticket for 3 days, then confirm both auto-end.
 20. Confirm `/replypublic` and discussion replies send the user both the public-answer notice and a copied version of the actual public post when the bot has that source message.
+21. Configure `CALENDLY_URL`, test `/meeting`, `/meeting <ticket_number>`, `/meetingstatus`, and `/sendmeeting <ticket_number>`.
+22. Confirm `{{meeting_link}}` expands correctly in `/quickreply` and other admin reply paths.
 
 ## Git workflow
 
