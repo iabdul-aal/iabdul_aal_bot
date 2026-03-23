@@ -12,6 +12,9 @@ from telegram import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
+    KeyboardButton,
+    KeyboardButtonRequestChat,
+    MessageOriginChannel,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
@@ -61,6 +64,11 @@ SUBMIT_LABEL = "Submit"
 RESTART_LABEL = "Restart"
 CANCEL_LABEL = "Cancel"
 SKIP_LABEL = "Skip"
+PICK_CHANNEL_LABEL = "Choose channel"
+PICK_DISCUSSION_LABEL = "Choose discussion group"
+
+CHANNEL_PICKER_REQUEST_ID = 7001
+DISCUSSION_PICKER_REQUEST_ID = 7002
 
 MAIN_MENU = [[GUIDED_REQUEST_LABEL, QUICK_QUESTION_LABEL], [HOW_IT_WORKS_LABEL]]
 TRACK_MENU = [["AI / LLMs", "Python"], ["Backend", "Frontend"], ["Career", "General"]]
@@ -116,8 +124,16 @@ def parse_numeric_id(value: str) -> int | None:
     return None
 
 
-def build_keyboard(rows: list[list[str]]) -> ReplyKeyboardMarkup:
+def build_keyboard(rows: list[list[object]]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def build_chat_request_keyboard(button_text: str, request_chat: KeyboardButtonRequestChat) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(button_text, request_chat=request_chat)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 def ensure_data_dir() -> None:
@@ -194,11 +210,11 @@ async def admin_can_manage_chat(
     chat_id: int,
     user_id: int | None,
 ) -> bool:
-    if is_admin(context, user_id):
-        return True
-
     admin_id = context.application.bot_data.get("admin_id")
     if admin_id is None:
+        return False
+
+    if user_id is not None and user_id != admin_id:
         return False
 
     try:
@@ -208,6 +224,70 @@ async def admin_can_manage_chat(
         return False
 
     return admin_member.status in {"administrator", "creator"}
+
+
+def extract_forwarded_chat(message) -> tuple[int, str | None] | tuple[None, None]:
+    forward_origin = getattr(message, "forward_origin", None)
+    if isinstance(forward_origin, MessageOriginChannel):
+        return forward_origin.chat.id, getattr(forward_origin.chat, "title", None)
+
+    forward_from_chat = getattr(message, "forward_from_chat", None)
+    if forward_from_chat is not None:
+        return forward_from_chat.id, getattr(forward_from_chat, "title", None)
+
+    return None, None
+
+
+async def resolve_chat_reference(context: ContextTypes.DEFAULT_TYPE, value: str):
+    reference = (value or "").strip()
+    if not reference:
+        return None
+
+    if not reference.startswith("@") and not reference.lstrip("-").isdigit():
+        reference = f"@{reference}"
+
+    numeric_id = parse_numeric_id(reference)
+    chat_ref = numeric_id if numeric_id is not None else reference
+    try:
+        return await context.bot.get_chat(chat_id=chat_ref)
+    except TelegramError:
+        logger.exception("Failed to resolve chat reference %s", reference)
+        return None
+
+
+async def validate_public_channel(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> tuple[bool, str]:
+    if not await admin_can_manage_chat(context, chat_id, context.application.bot_data.get("admin_id")):
+        return False, "The configured admin account must also be an administrator in that channel."
+
+    try:
+        bot_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=context.bot.id)
+    except TelegramError:
+        logger.exception("Failed to read bot membership for channel %s", chat_id)
+        return False, "I can see that channel ID, but I could not verify the bot's access there."
+
+    if bot_member.status not in {"administrator", "creator"}:
+        return False, "The bot must be an administrator in that channel before it can post public answers."
+
+    if bot_member.status != "creator" and not getattr(bot_member, "can_post_messages", False):
+        return False, "The bot is in that channel, but it still needs the Post Messages admin right."
+
+    return True, ""
+
+
+async def validate_discussion_group(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> tuple[bool, str]:
+    if not await admin_can_manage_chat(context, chat_id, context.application.bot_data.get("admin_id")):
+        return False, "The configured admin account must also be an administrator in that discussion group."
+
+    try:
+        bot_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=context.bot.id)
+    except TelegramError:
+        logger.exception("Failed to read bot membership for discussion group %s", chat_id)
+        return False, "I can see that group ID, but I could not verify the bot's access there."
+
+    if bot_member.status not in {"administrator", "creator", "member"}:
+        return False, "The bot must be added to that discussion group before it can use it."
+
+    return True, ""
 
 
 def _read_submissions_unlocked() -> list[dict]:
@@ -690,9 +770,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if is_admin(context, update.effective_user.id if update.effective_user else None):
         await update.message.reply_text(
             "/adminstatus shows the current admin.\n"
-            "/setdiscussion binds the linked discussion group.\n"
+            "/setdiscussion opens a private chat picker for the discussion group.\n"
             "/discussionstatus shows the linked discussion group.\n"
-            "/setchannel binds the public answer channel.\n"
+            "/setchannel opens a private chat picker for the public channel.\n"
             "/channelstatus shows the public answer channel.\n"
             "/stats shows mentorship request counts.\n"
             "/reply <ticket> <message> sends a private answer.\n"
@@ -734,7 +814,7 @@ async def claim_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "Admin saved successfully.\n"
         "The mentorship bot is ready to receive requests.\n"
-        "If you use a linked discussion group or channel for public answers, run /setdiscussion or /setchannel there once.",
+        "Use /setdiscussion and /setchannel from your private admin chat to connect the public destinations.",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -756,9 +836,28 @@ async def set_discussion_group(update: Update, context: ContextTypes.DEFAULT_TYP
     if message is None or update.effective_chat is None:
         return
 
+    if update.effective_chat.type == "private":
+        if not is_admin(context, update.effective_user.id if update.effective_user else None):
+            await message.reply_text("This command is available only to the admin.")
+            return
+
+        request_chat = KeyboardButtonRequestChat(
+            request_id=DISCUSSION_PICKER_REQUEST_ID,
+            chat_is_channel=False,
+            bot_is_member=True,
+            request_title=True,
+            request_username=True,
+        )
+        await message.reply_text(
+            "Choose the discussion group from Telegram's chat picker.\n"
+            "This is the recommended setup path for discussion replies.",
+            reply_markup=build_chat_request_keyboard(PICK_DISCUSSION_LABEL, request_chat),
+        )
+        return
+
     if update.effective_chat.type not in {"group", "supergroup"}:
         await message.reply_text(
-            "Open the linked discussion group and run /setdiscussion there."
+            "Use /setdiscussion in your private chat with the bot, then choose the discussion group."
         )
         return
 
@@ -773,6 +872,10 @@ async def set_discussion_group(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     discussion_group_id = update.effective_chat.id
+    valid, error_message = await validate_discussion_group(context, discussion_group_id)
+    if not valid:
+        await message.reply_text(error_message)
+        return
     context.application.bot_data["discussion_group_id"] = discussion_group_id
     save_discussion_group_id(discussion_group_id)
     await message.reply_text(
@@ -799,25 +902,67 @@ async def set_public_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if message is None or update.effective_chat is None:
         return
 
-    if update.effective_chat.type != "channel":
-        await message.reply_text("Open the public channel and run /setchannel there.")
+    if update.effective_chat.type != "private" and update.effective_user is None:
+        await message.reply_text("Use /setchannel in your private chat with the bot, then choose the channel there.")
         return
 
-    if not await admin_can_manage_chat(
-        context,
-        update.effective_chat.id,
-        update.effective_user.id if update.effective_user else None,
-    ):
+    if not is_admin(context, update.effective_user.id if update.effective_user else None):
+        await message.reply_text("This command is available only to the admin.")
+        return
+
+    if context.args:
+        chat = await resolve_chat_reference(context, context.args[0])
+        if chat is None:
+            await message.reply_text("I could not find that channel. Send /setchannel in private and choose it from the picker instead.")
+            return
+        if chat.type != "channel":
+            await message.reply_text("That chat is not a channel.")
+            return
+        valid, error_message = await validate_public_channel(context, chat.id)
+        if not valid:
+            await message.reply_text(error_message)
+            return
+        context.application.bot_data["public_channel_id"] = chat.id
+        save_public_channel_id(chat.id)
         await message.reply_text(
-            "This command is available only to the configured admin or from a channel that admin already manages."
+            f"Public channel saved successfully.\nChannel ID: {chat.id}"
+            + (f"\nUsername: @{chat.username}" if getattr(chat, "username", None) else "")
         )
         return
 
-    public_channel_id = update.effective_chat.id
-    context.application.bot_data["public_channel_id"] = public_channel_id
-    save_public_channel_id(public_channel_id)
+    replied_message = getattr(message, "reply_to_message", None)
+    if replied_message is not None:
+        forwarded_chat_id, forwarded_title = extract_forwarded_chat(replied_message)
+        if forwarded_chat_id is None:
+            await message.reply_text("Reply to a forwarded channel post, or use the picker button instead.")
+            return
+        valid, error_message = await validate_public_channel(context, forwarded_chat_id)
+        if not valid:
+            await message.reply_text(error_message)
+            return
+        context.application.bot_data["public_channel_id"] = forwarded_chat_id
+        save_public_channel_id(forwarded_chat_id)
+        await message.reply_text(
+            f"Public channel saved successfully.\nChannel ID: {forwarded_chat_id}"
+            + (f"\nTitle: {forwarded_title}" if forwarded_title else "")
+        )
+        return
+
+    if update.effective_chat.type != "private":
+        await message.reply_text("Use /setchannel in your private chat with the bot, then choose the channel there.")
+        return
+
+    request_chat = KeyboardButtonRequestChat(
+        request_id=CHANNEL_PICKER_REQUEST_ID,
+        chat_is_channel=True,
+        bot_is_member=True,
+        request_title=True,
+        request_username=True,
+    )
     await message.reply_text(
-        f"Public channel saved successfully.\nChannel ID: {public_channel_id}"
+        "Choose the public channel from Telegram's chat picker.\n"
+        "You can also reply to a forwarded post from that channel with /setchannel, or send /setchannel <chat_id_or_username>.",
+        reply_markup=build_chat_request_keyboard(PICK_CHANNEL_LABEL, request_chat),
     )
 
 
@@ -833,6 +978,50 @@ async def channel_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     await update.message.reply_text(f"Current public channel ID: {public_channel_id}")
+
+
+async def handle_chat_shared(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is None or message.chat_shared is None or update.effective_user is None:
+        return
+
+    if update.effective_chat is None or update.effective_chat.type != "private":
+        return
+
+    if not is_admin(context, update.effective_user.id):
+        await message.reply_text("This setup action is available only to the admin.")
+        return
+
+    shared = message.chat_shared
+    if shared.request_id == CHANNEL_PICKER_REQUEST_ID:
+        valid, error_message = await validate_public_channel(context, shared.chat_id)
+        if not valid:
+            await message.reply_text(error_message, reply_markup=ReplyKeyboardRemove())
+            return
+
+        context.application.bot_data["public_channel_id"] = shared.chat_id
+        save_public_channel_id(shared.chat_id)
+        await message.reply_text(
+            f"Public channel saved successfully.\nChannel ID: {shared.chat_id}"
+            + (f"\nTitle: {shared.title}" if shared.title else "")
+            + (f"\nUsername: @{shared.username}" if shared.username else ""),
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    if shared.request_id == DISCUSSION_PICKER_REQUEST_ID:
+        valid, error_message = await validate_discussion_group(context, shared.chat_id)
+        if not valid:
+            await message.reply_text(error_message, reply_markup=ReplyKeyboardRemove())
+            return
+
+        context.application.bot_data["discussion_group_id"] = shared.chat_id
+        save_discussion_group_id(shared.chat_id)
+        await message.reply_text(
+            f"Discussion group saved successfully.\nGroup ID: {shared.chat_id}"
+            + (f"\nTitle: {shared.title}" if shared.title else ""),
+            reply_markup=ReplyKeyboardRemove(),
+        )
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1542,6 +1731,12 @@ def main() -> None:
     app.add_handler(CommandHandler("discussionstatus", discussion_status))
     app.add_handler(CommandHandler("setchannel", set_public_channel))
     app.add_handler(CommandHandler("channelstatus", channel_status))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.StatusUpdate.CHAT_SHARED,
+            handle_chat_shared,
+        )
+    )
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reply", reply_ticket))
     app.add_handler(CommandHandler("replypublic", reply_public_ticket))

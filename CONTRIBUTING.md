@@ -59,8 +59,8 @@ python bot.py
 
 1. Start the bot locally.
 2. Send `/claimadmin` from the admin account.
-3. Run `/setdiscussion` inside the linked discussion group if discussion replies are used.
-4. Run `/setchannel` inside the public channel if channel replies are used.
+3. Run `/setdiscussion` in the private admin chat and choose the linked discussion group if discussion replies are used.
+4. Run `/setchannel` in the private admin chat and choose the public channel if channel replies are used.
 5. Submit a private mentorship ticket.
 6. Submit a public mentorship ticket.
 7. Test `/reply`, `/replypublic`, `/markpublic`, and `/status`.

@@ -40,12 +40,12 @@ DATA_DIR=./data
 
 `ADMIN_ID` can stay empty at first. After the bot is running, open it in Telegram and send `/claimadmin` from the admin account.
 
-If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP_ID` empty and run `/setdiscussion` inside that group.
+If you use a linked discussion group for public answers, leave `DISCUSSION_GROUP_ID` empty and run `/setdiscussion` in your private admin chat with the bot, then choose the group from Telegram's picker.
 
-If you use a channel for public answers, leave `PUBLIC_CHANNEL_ID` empty and run `/setchannel` inside that channel.
+If you use a channel for public answers, leave `PUBLIC_CHANNEL_ID` empty and run `/setchannel` in your private admin chat with the bot, then choose the channel from Telegram's picker.
 
 The bot must be an admin in any discussion group or channel it should post to.
-The configured admin account must also be an admin there, even if Telegram sends the command as the channel itself.
+The configured admin account must also be an admin there so Telegram can offer that chat in the picker.
 
 ## Public and private behavior
 
