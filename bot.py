@@ -30,6 +30,7 @@ from telegram.error import Forbidden, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -142,6 +143,9 @@ TECHNICAL_SERVICE_LABEL = "Technical service"
 RESEARCH_COLLABORATION_LABEL = "Research collaboration"
 SPEAKING_WORKSHOP_LABEL = "Speaking or workshop"
 OTHER_REQUEST_LABEL = "Other"
+USER_CONTINUE_CALLBACK_PREFIX = "user:continue:"
+USER_CLOSE_CALLBACK_PREFIX = "user:close:"
+MAX_ATTACHMENT_CAPTION_LENGTH = 1024
 
 CHANNEL_PICKER_REQUEST_ID = 7001
 DISCUSSION_PICKER_REQUEST_ID = 7002
@@ -418,7 +422,6 @@ def build_user_commands() -> list[BotCommand]:
     commands = [
         BotCommand("start", "Open the request bot"),
         BotCommand("quick", "Send a one-message request"),
-        BotCommand("followup", "Continue a public ticket by ticket ID"),
     ]
     if feature_booking_enabled():
         commands.append(BotCommand("meeting", "Open the meeting link"))
@@ -501,6 +504,23 @@ def build_inline_markup(buttons: list[InlineKeyboardButton], columns: int = 2) -
     if not buttons:
         return None
     return InlineKeyboardMarkup(chunk_items(buttons, columns))
+
+
+def merge_inline_markups(*markups: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    buttons: list[InlineKeyboardButton] = []
+    seen: set[tuple[str, str | None, str | None, str | None]] = set()
+    for markup in markups:
+        if markup is None:
+            continue
+        for row in markup.inline_keyboard:
+            for button in row:
+                copy_text = getattr(getattr(button, "copy_text", None), "text", None)
+                signature = (button.text, button.url, button.callback_data, copy_text)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                buttons.append(button)
+    return build_inline_markup(buttons)
 
 
 def env_flag(value: str, default: bool) -> bool:
@@ -1495,6 +1515,56 @@ def ticket_has_public_answer(submission: dict) -> bool:
     return latest_public_response(submission) is not None or submission.get("status") == "answered_public"
 
 
+def user_followup_available(submission: dict) -> bool:
+    if ticket_is_ended(submission):
+        return False
+    if latest_public_response(submission) is not None:
+        return True
+    return any(response.get("direction") == "mentor_to_user" for response in submission.get("responses", []))
+
+
+def latest_public_link(submission: dict) -> str:
+    public_response = latest_public_response(submission) or {}
+    return normalize_https_url(public_response.get("link", ""))
+
+
+def user_ticket_callback_data(prefix: str, ticket_id: int) -> str:
+    return f"{prefix}{ticket_id}"
+
+
+def build_user_ticket_markup(
+    submission: dict,
+    public_link: str = "",
+    force_continue: bool = False,
+) -> InlineKeyboardMarkup | None:
+    ticket_id = int(submission.get("id", 0))
+    buttons: list[InlineKeyboardButton] = []
+    resolved_public_link = normalize_https_url(public_link) or latest_public_link(submission)
+    if force_continue or user_followup_available(submission):
+        buttons.append(
+            InlineKeyboardButton(
+                "Continue ticket",
+                callback_data=user_ticket_callback_data(USER_CONTINUE_CALLBACK_PREFIX, ticket_id),
+            )
+        )
+    meeting_link = build_meeting_link(ticket_id, submission)
+    if meeting_link and not ticket_is_ended(submission):
+        buttons.append(InlineKeyboardButton("Book meeting", url=meeting_link))
+    if resolved_public_link:
+        buttons.append(InlineKeyboardButton("Open answer", url=resolved_public_link))
+    about_url = mentor_about_url()
+    if about_url:
+        buttons.append(InlineKeyboardButton("About mentor", url=about_url))
+    if not ticket_is_ended(submission):
+        buttons.append(
+            InlineKeyboardButton(
+                "Close ticket",
+                callback_data=user_ticket_callback_data(USER_CLOSE_CALLBACK_PREFIX, ticket_id),
+            )
+        )
+    return build_inline_markup(buttons)
+
+
 def private_thread_enabled(submission: dict) -> bool:
     request = normalize_payload(submission.get("request", {}))
     if not allows_public_reply(request.get("answer_mode", "private")):
@@ -1551,6 +1621,63 @@ def trim_text(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
+
+
+def message_has_attachment(message) -> bool:
+    return getattr(message, "effective_attachment", None) is not None
+
+
+def message_supports_caption(message) -> bool:
+    return any(
+        [
+            getattr(message, "photo", None),
+            getattr(message, "video", None) is not None,
+            getattr(message, "voice", None) is not None,
+            getattr(message, "audio", None) is not None,
+            getattr(message, "document", None) is not None,
+            getattr(message, "animation", None) is not None,
+        ]
+    )
+
+
+def message_body_text(message) -> str:
+    return (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+
+
+def message_content_summary(message) -> str:
+    body = message_body_text(message)
+    if body:
+        return body
+
+    document = getattr(message, "document", None)
+    if document is not None:
+        filename = clean_text(getattr(document, "file_name", ""), "")
+        return f"[Document: {filename}]" if filename else "[Document]"
+    if getattr(message, "photo", None):
+        return "[Photo]"
+    if getattr(message, "video", None) is not None:
+        return "[Video]"
+    if getattr(message, "voice", None) is not None:
+        return "[Voice note]"
+    if getattr(message, "audio", None) is not None:
+        return "[Audio]"
+    if getattr(message, "video_note", None) is not None:
+        return "[Video note]"
+    if getattr(message, "animation", None) is not None:
+        return "[Animation]"
+    if getattr(message, "sticker", None) is not None:
+        return "[Sticker]"
+    return "[Attachment]"
+
+
+def build_attachment_caption(prefix: str, body: str) -> str:
+    clean_prefix = clean_text(prefix, "Ticket update")
+    clean_body = clean_text(body, "")
+    if not clean_body:
+        return trim_text(clean_prefix, MAX_ATTACHMENT_CAPTION_LENGTH)
+
+    remaining = max(MAX_ATTACHMENT_CAPTION_LENGTH - len(clean_prefix) - 2, 1)
+    return f"{clean_prefix}\n\n{trim_text(clean_body, remaining)}"
 
 
 def format_tag_preview(value: str) -> str:
@@ -1742,6 +1869,10 @@ def build_services_markup(link: str) -> InlineKeyboardMarkup | None:
 
 def cta_channel_url() -> str:
     return CTA_CHANNEL_URL or PUBLIC_CHANNEL_URL
+
+
+def mentor_about_url() -> str:
+    return website_page_url("about") or cta_website_url() or linkedin_url()
 
 
 def cta_website_url() -> str:
@@ -2015,23 +2146,28 @@ def mentor_brand_snippet() -> str:
 
 def build_start_brand_message() -> str:
     mentor_name = escape_html(MENTOR_LABEL or DEFAULT_MENTOR_LABEL)
-    lines = [f"<b>About {mentor_name}</b>"]
+    lines = [f"<b>Who replies here?</b>", mentor_name]
     snippet = mentor_brand_snippet()
     if snippet:
         lines.append(escape_html(snippet))
+    notes: list[str] = []
+    if mentor_about_url():
+        notes.append("Use About mentor to see background.")
     if cta_channel_url():
-        lines.extend(["", "Follow the channel for public notes and updates."])
+        notes.append("Channel is optional if you want public notes.")
+    if notes:
+        lines.extend(["", " ".join(notes)])
     return "\n".join(lines)
 
 
 def build_start_brand_markup() -> InlineKeyboardMarkup | None:
     buttons: list[InlineKeyboardButton] = []
     channel_url = cta_channel_url()
-    about_url = website_page_url("about") or cta_website_url() or linkedin_url()
-    if channel_url:
-        buttons.append(InlineKeyboardButton("Follow channel", url=channel_url))
+    about_url = mentor_about_url()
     if about_url:
         buttons.append(InlineKeyboardButton("About mentor", url=about_url))
+    if channel_url:
+        buttons.append(InlineKeyboardButton("Follow channel", url=channel_url))
     return build_inline_markup(buttons)
 
 
@@ -2933,12 +3069,7 @@ def build_public_notice(ticket_id: int, link: str, mode: str | None = None) -> s
     lines = [f"Update for ticket #{ticket_id}", f"A public answer is now available in {posted_at}."]
     if link:
         lines.append("Use the button below to open it.")
-    lines.extend(
-        [
-            "",
-            f"If you want to add more, send {public_followup_command(ticket_id)} followed by your update.",
-        ]
-    )
+    lines.extend(["", "Use the buttons below if you want to continue this ticket, book a meeting, or close it."])
     return append_user_cta("\n".join(lines), ticket_id)
 
 
@@ -2950,24 +3081,12 @@ def build_public_answer_message(ticket_id: int, answer_text: str, link: str, mod
         lines.extend(["", answer_text])
     if link:
         lines.extend(["", "Use the button below to open the published version."])
-    lines.extend(
-        [
-            "",
-            f"If you want to add more, send {public_followup_command(ticket_id)} followed by your update.",
-        ]
-    )
+    lines.extend(["", "Use the buttons below if you want to continue this ticket, book a meeting, or close it."])
     return append_user_cta("\n".join(lines), ticket_id)
 
 
 def build_public_answer_markup(ticket_id: int, submission: dict, link: str) -> InlineKeyboardMarkup | None:
-    buttons: list[InlineKeyboardButton] = []
-    public_link = normalize_https_url(link)
-    if public_link:
-        buttons.append(InlineKeyboardButton("Open public answer", url=public_link))
-    meeting_link = build_meeting_link(ticket_id, submission)
-    if meeting_link and not ticket_is_ended(submission):
-        buttons.append(InlineKeyboardButton("Book a meeting", url=meeting_link))
-    return build_inline_markup(buttons)
+    return build_user_ticket_markup(submission, link, force_continue=True)
 
 
 def build_ticket_actions_markup(record: dict) -> InlineKeyboardMarkup:
@@ -3276,17 +3395,7 @@ def build_summary(payload: dict) -> str:
 
 
 def build_user_status_markup(record: dict) -> InlineKeyboardMarkup | None:
-    ticket_id = int(record.get("id", 0))
-    buttons: list[InlineKeyboardButton] = []
-    public_response = latest_public_response(record)
-    public_link = normalize_https_url((public_response or {}).get("link", ""))
-    if public_link:
-        buttons.append(InlineKeyboardButton("Open public answer", url=public_link))
-    if booking_enabled() and not ticket_is_ended(record):
-        meeting_link = build_meeting_link(ticket_id, record)
-        if meeting_link:
-            buttons.append(InlineKeyboardButton("Book a meeting", url=meeting_link))
-    return build_inline_markup(buttons)
+    return build_user_ticket_markup(record)
 
 
 def build_user_status(record: dict) -> str:
@@ -3325,10 +3434,8 @@ def build_user_status(record: dict) -> str:
         lines.extend(["", user_todos_section])
     if ticket_is_ended(record):
         lines.extend(["", "This ticket is closed."])
-    elif public_followup_enabled(record):
-        lines.extend(["", f"If you want to add more, send {public_followup_command(ticket_id)} followed by your update."])
-    elif private_thread_enabled(record):
-        lines.extend(["", "Reply in the private thread to continue this ticket."])
+    elif user_followup_available(record):
+        lines.extend(["", "Use the buttons below to continue this ticket, send a file, book a meeting, or close it."])
 
     return "\n".join(lines)
 
@@ -3346,6 +3453,118 @@ def get_latest_private_thread_message_id(submission: dict, side: str) -> int | N
             return message_id
 
     return thread.get(root_key)
+
+
+def build_user_followup_prompt(ticket_id: int, submission: dict) -> str:
+    lines = [
+        f"Continue ticket #{ticket_id}",
+        "",
+        "Send your next message now.",
+        "You can type normally or attach a file.",
+    ]
+    if private_thread_enabled(submission):
+        lines.append("If you prefer, you can also reply to the earlier ticket thread.")
+    return "\n".join(lines)
+
+
+async def relay_user_message_to_admin(
+    context: ContextTypes.DEFAULT_TYPE,
+    submission: dict,
+    ticket_id: int,
+    source_message,
+    reply_to_message_id: int | None,
+    mode: str,
+) -> tuple[bool, str, int | None]:
+    admin_id = context.application.bot_data.get("admin_id")
+    if admin_id is None:
+        return False, "The mentor is not configured yet. Please try again later.", None
+
+    prefix = "Private follow-up" if mode == "private_thread" else "Follow-up"
+    reply_markup = build_ticket_actions_markup(submission)
+    try:
+        if message_has_attachment(source_message):
+            copy_kwargs = {
+                "chat_id": admin_id,
+                "from_chat_id": source_message.chat_id,
+                "message_id": source_message.message_id,
+                "reply_to_message_id": reply_to_message_id,
+                "reply_markup": reply_markup,
+            }
+            if message_supports_caption(source_message):
+                copy_kwargs["caption"] = build_attachment_caption(
+                    f"{prefix} for ticket #{ticket_id}",
+                    message_body_text(source_message),
+                )
+            sent_message = await context.bot.copy_message(**copy_kwargs)
+            return True, "", sent_message.message_id
+
+        sent_message = await context.bot.send_message(
+            chat_id=admin_id,
+            text=(
+                f"{prefix} for ticket #{ticket_id}\n\n"
+                f"{message_content_summary(source_message)}\n\n"
+                "Reply to this message to answer through the bot."
+            ),
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+            link_preview_options=NO_PREVIEW,
+        )
+    except TelegramError:
+        logger.exception("Failed to relay user update for ticket %s", ticket_id)
+        return False, "I could not send your update right now. Please try again in a moment.", None
+
+    return True, "", sent_message.message_id
+
+
+async def copy_private_ticket_message_to_user(
+    context: ContextTypes.DEFAULT_TYPE,
+    submission: dict,
+    ticket_id: int,
+    source_message,
+    admin_message_id: int | None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    caption_text: str | None = None,
+) -> tuple[bool, str]:
+    if ticket_is_ended(submission):
+        return False, ended_ticket_message(ticket_id)
+
+    user_id = submission.get("user", {}).get("id")
+    if user_id is None:
+        return False, "I could not find the Telegram user for this ticket."
+
+    merged_markup = merge_inline_markups(reply_markup, build_user_ticket_markup(submission, force_continue=True))
+    reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
+    body = caption_text if caption_text is not None else message_body_text(source_message)
+    try:
+        copy_kwargs = {
+            "chat_id": user_id,
+            "from_chat_id": source_message.chat_id,
+            "message_id": source_message.message_id,
+            "reply_to_message_id": reply_target_message_id,
+            "reply_markup": merged_markup,
+        }
+        if message_supports_caption(source_message):
+            copy_kwargs["caption"] = build_attachment_caption(
+                f"Reply for ticket #{ticket_id}",
+                body,
+            )
+        sent_message = await context.bot.copy_message(**copy_kwargs)
+    except TelegramError:
+        logger.exception("Failed to copy private ticket message")
+        return False, f"I could not deliver the private message for ticket #{ticket_id}."
+
+    append_response(
+        ticket_id,
+        "answered_private",
+        {
+            "mode": "private_thread",
+            "direction": "mentor_to_user",
+            "text": clean_text(body, message_content_summary(source_message)),
+            "admin_message_id": admin_message_id,
+            "user_message_id": sent_message.message_id,
+        },
+    )
+    return True, ""
 
 
 async def send_private_ticket_message(
@@ -3368,7 +3587,7 @@ async def send_private_ticket_message(
     if allows_public_reply(request.get("answer_mode", "private")) and not private_thread_enabled(submission):
         message_text = (
             f"{message_text}\n\n"
-            "Reply to this message if you want to continue privately in the bot."
+            "You can reply here, attach a file, or use Continue ticket below if you want to keep going."
         )
     if direction == "mentor_to_user":
         prior_mentor_replies = [
@@ -3378,6 +3597,7 @@ async def send_private_ticket_message(
         ]
         if not prior_mentor_replies:
             message_text = append_user_cta(message_text, ticket_id, submission)
+        reply_markup = merge_inline_markups(reply_markup, build_user_ticket_markup(submission, force_continue=True))
 
     reply_target_message_id = get_latest_private_thread_message_id(submission, "user")
     try:
@@ -3421,12 +3641,10 @@ def build_user_todo_update_message(ticket_id: int, submission: dict, todo: dict,
             lines.append(format_todo_line(item, include_owner=False))
 
     lines.append("")
-    if private_thread_enabled(submission) and not ticket_is_ended(submission):
-        lines.append("Reply to the existing private ticket thread in the bot when you have an update.")
-    elif public_followup_enabled(submission):
-        lines.append(f"When you have an update, continue with {public_followup_command(ticket_id)}.")
+    if user_followup_available(submission):
+        lines.append("Use the buttons below when you have an update.")
     else:
-        lines.append(f"Use /status {ticket_id} any time to review the current checklist.")
+        lines.append(f"Use /status {ticket_id} any time to review this checklist.")
     return "\n".join(lines)
 
 
@@ -3447,6 +3665,7 @@ async def notify_user_todo_update(
             chat_id=user_id,
             text=build_user_todo_update_message(ticket_id, submission, todo, reason),
             reply_to_message_id=reply_target,
+            reply_markup=build_user_ticket_markup(submission),
             link_preview_options=NO_PREVIEW,
         )
     except TelegramError:
@@ -3475,6 +3694,7 @@ async def send_due_todo_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                     chat_id=target_chat_id,
                     text=build_todo_reminder_message(ticket_id, submission, todo, todo.get("owner", "user")),
                     reply_to_message_id=reply_target,
+                    reply_markup=build_user_ticket_markup(submission) if todo.get("owner") == "user" else None,
                     link_preview_options=NO_PREVIEW,
                 )
             except TelegramError:
@@ -3544,6 +3764,36 @@ def resolve_admin_ticket_target(
             return int(submission["id"]), submission, 0
 
     return None, None, 0
+
+
+def resolve_user_ticket_target(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[int | None, dict | None]:
+    if update.message is None or update.effective_user is None:
+        return None, None
+
+    if context.args:
+        ticket_id = parse_ticket_id(context.args[0])
+        if ticket_id is not None:
+            _, _, submission = find_submission(ticket_id)
+            if submission is not None and submission.get("user", {}).get("id") == update.effective_user.id:
+                return ticket_id, submission
+
+    replied_message = getattr(update.message, "reply_to_message", None)
+    if replied_message is None or update.effective_chat is None:
+        return None, None
+
+    _, _, submission, thread_context = find_submission_by_private_message(
+        update.effective_chat.id,
+        replied_message.message_id,
+    )
+    if submission is None or thread_context is None or thread_context.get("side") != "user":
+        return None, None
+    if submission.get("user", {}).get("id") != update.effective_user.id:
+        return None, None
+
+    return int(submission["id"]), submission
 
 
 def add_ticket_note(ticket_id: int, text: str) -> tuple[dict | None, dict | None]:
@@ -3835,6 +4085,7 @@ async def notify_user_public_answer(
                 chat_id=user_id,
                 from_chat_id=source_chat_id,
                 message_id=source_message_id,
+                reply_markup=reply_markup,
             )
         except TelegramError:
             logger.exception("Failed to copy the public answer to the user")
@@ -4784,6 +5035,95 @@ def reset_request(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["intake_mode"] = ""
 
 
+def clear_pending_followup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("followup_ticket_id", None)
+    context.user_data.pop("followup_prompt_message_id", None)
+
+
+def set_pending_followup(context: ContextTypes.DEFAULT_TYPE, ticket_id: int, prompt_message_id: int | None = None) -> None:
+    context.user_data["followup_ticket_id"] = ticket_id
+    if prompt_message_id is None:
+        context.user_data.pop("followup_prompt_message_id", None)
+    else:
+        context.user_data["followup_prompt_message_id"] = prompt_message_id
+
+
+def pending_followup_ticket_id(context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    return parse_numeric_id(str(context.user_data.get("followup_ticket_id", "")).strip())
+
+
+def is_pending_followup_prompt_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    message = update.message
+    prompt_message_id = parse_numeric_id(str(context.user_data.get("followup_prompt_message_id", "")).strip())
+    if message is None or message.reply_to_message is None or prompt_message_id is None:
+        return False
+    return message.reply_to_message.message_id == prompt_message_id
+
+
+async def submit_pending_followup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if update.message is None or update.effective_user is None:
+        return False
+
+    ticket_id = pending_followup_ticket_id(context)
+    if ticket_id is None:
+        return False
+
+    _, _, submission = find_submission(ticket_id)
+    if submission is None:
+        clear_pending_followup(context)
+        await update.message.reply_text(
+            "That ticket could not be found anymore.",
+            reply_markup=build_keyboard(MAIN_MENU),
+        )
+        return True
+
+    if submission.get("user", {}).get("id") != update.effective_user.id:
+        clear_pending_followup(context)
+        await update.message.reply_text("You can only continue your own tickets.")
+        return True
+
+    if ticket_is_ended(submission):
+        clear_pending_followup(context)
+        await update.message.reply_text(ended_ticket_message(ticket_id))
+        return True
+
+    mode = "private_thread" if private_thread_enabled(submission) else "public_followup"
+    sent, error_message, admin_message_id = await relay_user_message_to_admin(
+        context,
+        submission,
+        ticket_id,
+        update.message,
+        get_latest_private_thread_message_id(submission, "admin"),
+        mode,
+    )
+    if not sent:
+        await update.message.reply_text(error_message)
+        return True
+
+    updated_submission = append_response(
+        ticket_id,
+        "open",
+        {
+            "mode": mode,
+            "direction": "user_to_mentor",
+            "text": message_content_summary(update.message),
+            "admin_message_id": admin_message_id,
+            "user_message_id": update.message.message_id,
+        },
+    )
+    clear_pending_followup(context)
+    await update.message.reply_text(
+        append_user_cta(
+            f"Your update for ticket #{ticket_id} has been sent.",
+            ticket_id,
+            updated_submission or submission,
+        ),
+        reply_markup=build_user_ticket_markup(updated_submission or submission),
+        link_preview_options=NO_PREVIEW,
+    )
+    return True
+
+
 async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message is None:
         return ConversationHandler.END
@@ -4803,6 +5143,7 @@ async def start_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     reset_request(context)
+    clear_pending_followup(context)
     context.user_data["intake_mode"] = "guided"
     context.user_data["request"] = {
         "request_kind": "mentorship",
@@ -4844,6 +5185,7 @@ async def begin_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     reset_request(context)
+    clear_pending_followup(context)
     context.user_data["intake_mode"] = "quick"
     await update.message.reply_text(
         step_text(
@@ -4876,6 +5218,10 @@ async def start_quick_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     text = (update.message.text or "").strip()
     if not text:
+        return ConversationHandler.END
+
+    if pending_followup_ticket_id(context) is not None:
+        await submit_pending_followup(update, context)
         return ConversationHandler.END
 
     reset_request(context)
@@ -5187,12 +5533,130 @@ async def confirm_request(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cancel_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reset_request(context)
+    clear_pending_followup(context)
     if update.message is not None:
         await update.message.reply_text(
             "Your current request was cancelled.",
             reply_markup=build_keyboard(MAIN_MENU),
         )
     return ConversationHandler.END
+
+
+async def handle_pending_followup_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_chat is None:
+        return
+    if update.effective_chat.type != "private" or update.message.reply_to_message is not None:
+        return
+    await submit_pending_followup(update, context)
+
+
+async def user_end_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    ticket_id, submission = resolve_user_ticket_target(update, context)
+    if ticket_id is None or submission is None:
+        await update.message.reply_text(
+            "Usage: /done <ticket_number>\nYou can also reply to one of your ticket messages with /done."
+        )
+        return
+
+    updated_submission, error_message = await close_ticket_for_user(
+        context,
+        submission,
+        ticket_id,
+        update.message.message_id,
+    )
+    if error_message:
+        await update.message.reply_text(error_message)
+        return
+
+    clear_pending_followup(context)
+    await update.message.reply_text(
+        append_user_cta(
+            f"Ticket #{ticket_id} is now closed.\nStart a new question any time if you need more help.",
+            ticket_id,
+            updated_submission or submission,
+        ),
+        reply_markup=build_user_ticket_markup(updated_submission or submission),
+        link_preview_options=NO_PREVIEW,
+    )
+
+
+async def handle_user_ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or update.effective_user is None:
+        return
+
+    data = query.data or ""
+    ticket_id: int | None = None
+    action = ""
+    if data.startswith(USER_CONTINUE_CALLBACK_PREFIX):
+        ticket_id = parse_ticket_id(data.removeprefix(USER_CONTINUE_CALLBACK_PREFIX))
+        action = "continue"
+    elif data.startswith(USER_CLOSE_CALLBACK_PREFIX):
+        ticket_id = parse_ticket_id(data.removeprefix(USER_CLOSE_CALLBACK_PREFIX))
+        action = "close"
+
+    if ticket_id is None:
+        await query.answer()
+        return
+
+    _, _, submission = find_submission(ticket_id)
+    if submission is None:
+        clear_pending_followup(context)
+        await query.answer("Ticket not found.", show_alert=True)
+        return
+
+    if submission.get("user", {}).get("id") != update.effective_user.id:
+        await query.answer("This action is only available on your own tickets.", show_alert=True)
+        return
+
+    if action == "continue":
+        if ticket_is_ended(submission):
+            clear_pending_followup(context)
+            await query.answer("This ticket is already closed.", show_alert=True)
+            return
+
+        prompt_message = None
+        if query.message is not None:
+            prompt_message = await query.message.reply_text(
+                build_user_followup_prompt(ticket_id, submission),
+                reply_markup=build_user_ticket_markup(submission),
+                link_preview_options=NO_PREVIEW,
+            )
+        set_pending_followup(context, ticket_id, prompt_message.message_id if prompt_message is not None else None)
+        await query.answer("Send your next message now.")
+        return
+
+    updated_submission, error_message = await close_ticket_for_user(
+        context,
+        submission,
+        ticket_id,
+        query.message.message_id if query.message is not None else None,
+    )
+    if error_message:
+        await query.answer(error_message, show_alert=True)
+        return
+
+    clear_pending_followup(context)
+    await query.answer("Ticket closed.")
+    if query.message is not None:
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=build_user_ticket_markup(updated_submission or submission)
+            )
+        except TelegramError:
+            logger.exception("Failed to refresh closed ticket markup for ticket %s", ticket_id)
+        await query.message.reply_text(
+            append_user_cta(
+                f"Ticket #{ticket_id} is now closed.\nStart a new question any time if you need more help.",
+                ticket_id,
+                updated_submission or submission,
+            ),
+            reply_markup=build_user_ticket_markup(updated_submission or submission),
+            link_preview_options=NO_PREVIEW,
+        )
 
 
 async def show_help_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5504,13 +5968,55 @@ async def followup_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         append_user_cta(
             f"Your follow-up for ticket #{ticket_id} has been sent.\n"
-            "Use /status to track the same ticket.",
+            "You can use the buttons below if you want to continue, book a meeting, or close the ticket later.",
             ticket_id,
             submission,
         ),
-        reply_markup=build_keyboard(MAIN_MENU),
+        reply_markup=build_user_ticket_markup(submission),
         link_preview_options=NO_PREVIEW,
     )
+
+
+async def close_ticket_for_user(
+    context: ContextTypes.DEFAULT_TYPE,
+    submission: dict,
+    ticket_id: int,
+    user_message_id: int | None = None,
+) -> tuple[dict | None, str]:
+    if ticket_is_ended(submission):
+        return submission, ended_ticket_message(ticket_id)
+
+    admin_message_id = None
+    admin_id = context.application.bot_data.get("admin_id")
+    if admin_id is not None:
+        try:
+            sent_admin_message = await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"Ticket #{ticket_id} was closed by the user.\n"
+                    "No further replies will be accepted on this ticket."
+                ),
+                reply_to_message_id=get_latest_private_thread_message_id(submission, "admin"),
+                link_preview_options=NO_PREVIEW,
+            )
+            admin_message_id = sent_admin_message.message_id
+        except TelegramError:
+            logger.exception("Failed to notify admin about user-closed ticket")
+
+    updated_submission = append_response(
+        ticket_id,
+        "ended",
+        {
+            "mode": "ticket_end_user",
+            "direction": "user_to_mentor",
+            "text": "Closed by user",
+            "admin_message_id": admin_message_id,
+            "user_message_id": user_message_id,
+        },
+    )
+    if updated_submission is None:
+        return None, f"Ticket #{ticket_id} was not found."
+    return updated_submission, ""
 
 
 async def end_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5802,9 +6308,14 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
     if update.message.reply_to_message is None:
         return
 
-    reply_text = (update.message.text or "").strip()
-    if not reply_text:
+    if not (message_body_text(update.message) or message_has_attachment(update.message)):
         return
+
+    if is_pending_followup_prompt_reply(update, context):
+        await submit_pending_followup(update, context)
+        return
+
+    reply_text = message_body_text(update.message)
 
     _, _, submission, thread_context = find_submission_by_private_message(
         update.effective_chat.id,
@@ -5823,64 +6334,82 @@ async def handle_private_thread_reply(update: Update, context: ContextTypes.DEFA
         return
 
     if thread_context["side"] == "admin":
-        extra_tags = build_ticket_tags(ticket_id, submission)
-        reply_text, missing_tags = expand_saved_tags(
-            reply_text,
-            extra_tags,
-        )
-        if missing_tags:
-            await update.message.reply_text(
-                build_unknown_tags_message(missing_tags),
-                reply_markup=build_keyboard(ADMIN_MENU),
+        caption_text = reply_text
+        if caption_text:
+            extra_tags = build_ticket_tags(ticket_id, submission)
+            caption_text, missing_tags = expand_saved_tags(
+                caption_text,
+                extra_tags,
             )
+            if missing_tags:
+                await update.message.reply_text(
+                    build_unknown_tags_message(missing_tags),
+                    reply_markup=build_keyboard(ADMIN_MENU),
+                )
+                return
+
+        if message_has_attachment(update.message):
+            sent, error_message = await copy_private_ticket_message_to_user(
+                context,
+                submission,
+                ticket_id,
+                update.message,
+                update.message.message_id,
+                caption_text=caption_text,
+            )
+            if not sent:
+                await update.message.reply_text(error_message)
             return
 
         sent, error_message = await send_private_ticket_message(
             context,
             submission,
             ticket_id,
-            f"Private reply for ticket #{ticket_id}\n\n{reply_text}",
+            f"Private reply for ticket #{ticket_id}\n\n{caption_text}",
             update.message.message_id,
             "mentor_to_user",
         )
         if not sent:
             await update.message.reply_text(error_message)
-            return
         return
 
     admin_id = context.application.bot_data.get("admin_id")
     if admin_id is None or submission.get("user", {}).get("id") != update.effective_user.id:
         return
 
-    try:
-        sent_message = await context.bot.send_message(
-            chat_id=admin_id,
-            text=(
-                f"Private follow-up for ticket #{ticket_id}\n\n"
-                f"{reply_text}\n\n"
-                "Reply to this message to answer through the bot."
-            ),
-            reply_to_message_id=thread_context.get("remote_reply_to_message_id"),
-            reply_markup=build_ticket_actions_markup(submission),
-            link_preview_options=NO_PREVIEW,
-        )
-    except TelegramError:
-        logger.exception("Failed to relay user private-thread reply")
-        await update.message.reply_text(
-            "I could not send your private follow-up right now. Please try again in a moment."
-        )
+    sent, error_message, admin_message_id = await relay_user_message_to_admin(
+        context,
+        submission,
+        ticket_id,
+        update.message,
+        thread_context.get("remote_reply_to_message_id"),
+        "private_thread",
+    )
+    if not sent:
+        await update.message.reply_text(error_message)
         return
 
-    append_response(
+    updated_submission = append_response(
         ticket_id,
         "open",
         {
             "mode": "private_thread",
             "direction": "user_to_mentor",
-            "text": reply_text,
-            "admin_message_id": sent_message.message_id,
+            "text": message_content_summary(update.message),
+            "admin_message_id": admin_message_id,
             "user_message_id": update.message.message_id,
         },
+    )
+    if pending_followup_ticket_id(context) == ticket_id:
+        clear_pending_followup(context)
+    await update.message.reply_text(
+        append_user_cta(
+            f"Your update for ticket #{ticket_id} has been sent.",
+            ticket_id,
+            updated_submission or submission,
+        ),
+        reply_markup=build_user_ticket_markup(updated_submission or submission),
+        link_preview_options=NO_PREVIEW,
     )
 
 
@@ -6231,6 +6760,7 @@ def main() -> None:
     app.add_handler(CommandHandler("profile", profile_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("availability", availability_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("followup", followup_ticket, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("done", user_end_ticket, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("muteupdates", mute_updates, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("resumeupdates", resume_updates, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("status", status_command))
@@ -6255,6 +6785,12 @@ def main() -> None:
     app.add_handler(CommandHandler("discussionstatus", discussion_status))
     app.add_handler(CommandHandler("setchannel", set_public_channel))
     app.add_handler(CommandHandler("channelstatus", channel_status))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.ATTACHMENT & ~filters.REPLY & ~filters.COMMAND,
+            handle_pending_followup_message,
+        )
+    )
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & filters.StatusUpdate.CHAT_SHARED,
@@ -6311,15 +6847,18 @@ def main() -> None:
     )
     app.add_handler(conversation)
     app.add_handler(
+        CallbackQueryHandler(handle_user_ticket_callback, pattern=r"^user:")
+    )
+    app.add_handler(
         MessageHandler(
-            filters.ChatType.PRIVATE & filters.REPLY & filters.TEXT & ~filters.COMMAND,
+            filters.ChatType.PRIVATE & filters.REPLY & (filters.TEXT | filters.ATTACHMENT) & ~filters.COMMAND,
             handle_private_thread_reply,
         )
     )
     app.add_handler(CommandHandler("cancel", cancel_request))
 
     logger.info("Mentorship bot is starting")
-    app.run_polling(allowed_updates=["message", "channel_post"])
+    app.run_polling(allowed_updates=["message", "channel_post", "callback_query"])
 
 
 if __name__ == "__main__":
